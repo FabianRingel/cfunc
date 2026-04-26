@@ -3,8 +3,14 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 )
+
+// MaxConcurrencyCeiling caps user-supplied MaxConcurrency to prevent a
+// register call from spawning thousands of instances. Operators who
+// genuinely need higher numbers can patch this and rebuild.
+const MaxConcurrencyCeiling = 256
 
 // serveFunctions handles the collection endpoint:
 //   POST /_/api/functions   register or replace
@@ -23,12 +29,34 @@ func (h *Handler) serveFunctions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Name) == "" {
+	req.Name = strings.TrimSpace(req.Name)
+	req.Binary = strings.TrimSpace(req.Binary)
+	if req.Name == "" {
 		http.Error(w, "name required", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Binary) == "" {
+	if req.Binary == "" {
 		http.Error(w, "binary required", http.StatusBadRequest)
+		return
+	}
+	// Reject relative paths and path-traversal artefacts: the gateway
+	// resolves binary against its own cwd, which is not what callers
+	// expect. Forcing absolute paths prevents accidental references to
+	// repo files and arbitrary-binary mishaps.
+	if !filepath.IsAbs(req.Binary) {
+		http.Error(w, "binary must be an absolute path", http.StatusBadRequest)
+		return
+	}
+	if filepath.Clean(req.Binary) != req.Binary {
+		http.Error(w, "binary must be a clean path (no .. or //)", http.StatusBadRequest)
+		return
+	}
+	if req.MaxConcurrency < 0 {
+		http.Error(w, "max_concurrency must be >= 0", http.StatusBadRequest)
+		return
+	}
+	if req.MaxConcurrency > MaxConcurrencyCeiling {
+		http.Error(w, "max_concurrency exceeds ceiling", http.StatusBadRequest)
 		return
 	}
 	if err := h.admin.RegisterFunction(req); err != nil {

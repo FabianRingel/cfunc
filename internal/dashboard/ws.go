@@ -24,11 +24,21 @@ type helloPayload struct {
 const stateInterval = 1 * time.Second
 
 func (h *Handler) serveWS(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Same-origin only by default; accept any origin so the dashboard
-		// works behind reverse proxies and during dev (Vite -> :18080).
-		InsecureSkipVerify: true,
-	})
+	opts := &websocket.AcceptOptions{}
+	// Same-origin by default. Operators opt in to other origins via
+	// -allowed-origins (CSV) → AllowedOrigins. The literal "*" is the
+	// only way to fully disable the check (for reverse-proxy setups
+	// where Origin is rewritten); we don't want that to be the default.
+	for _, o := range h.allowedOrigins {
+		if o == "*" {
+			opts.InsecureSkipVerify = true
+			break
+		}
+	}
+	if !opts.InsecureSkipVerify {
+		opts.OriginPatterns = h.allowedOrigins
+	}
+	conn, err := websocket.Accept(w, r, opts)
 	if err != nil {
 		return
 	}

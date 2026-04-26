@@ -40,6 +40,9 @@ func main() {
 	dashPrefix := flag.String("dash", "/_/", "dashboard URL prefix on admin port")
 	tokenFile := flag.String("admin-token-file", "", "path to file containing admin token")
 	tokenLit := flag.String("admin-token", "", "admin token (literal — env/file preferred)")
+	allowedOrigins := flag.String("allowed-origins", "",
+		"comma-separated extra Origin patterns the dashboard WebSocket "+
+			"will accept (default: same-origin only; use \"*\" to allow any)")
 	name := flag.String("fn", "", "(optional) initial function name")
 	binary := flag.String("binary", "", "(optional) initial function binary")
 	flag.Parse()
@@ -82,7 +85,19 @@ func main() {
 	// Admin mux: dashboard + admin API, gated by token.
 	adminMux := http.NewServeMux()
 	if *dashPrefix != "" {
-		dh := dashboard.NewWithAdmin(*dashPrefix, statsAdapter{gw}, adminAdapter{gw}, capture)
+		var origins []string
+		for _, o := range strings.Split(*allowedOrigins, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				origins = append(origins, o)
+			}
+		}
+		dh := dashboard.NewWithConfig(dashboard.Config{
+			Prefix:         *dashPrefix,
+			Stats:          statsAdapter{gw},
+			Admin:          adminAdapter{gw},
+			Logs:           capture,
+			AllowedOrigins: origins,
+		})
 		adminMux.Handle(dh.Prefix(), dh)
 	}
 	var adminHandler http.Handler = adminMux

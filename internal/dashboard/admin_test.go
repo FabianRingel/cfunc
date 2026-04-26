@@ -80,9 +80,13 @@ func TestAdminRegisterRejectsMissingFields(t *testing.T) {
 	defer srv.Close()
 
 	cases := []string{
-		`{"binary":"/x"}`,         // no name
-		`{"name":"x"}`,            // no binary
-		`{"name":" ","binary":"/x"}`,
+		`{"binary":"/x"}`,                                  // no name
+		`{"name":"x"}`,                                     // no binary
+		`{"name":" ","binary":"/x"}`,                       // empty name (after trim)
+		`{"name":"x","binary":"relative"}`,                 // not absolute
+		`{"name":"x","binary":"/foo/../bar"}`,              // unclean
+		`{"name":"x","binary":"/x","max_concurrency":-1}`,  // negative
+		`{"name":"x","binary":"/x","max_concurrency":9999}`,// over ceiling
 	}
 	for i, body := range cases {
 		resp, _ := http.Post(srv.URL+"/_/api/functions", "application/json", strings.NewReader(body))

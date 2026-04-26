@@ -123,17 +123,17 @@ func (g *Gateway) Stats() Stats {
 			var totalInv, totalErr uint64
 			var totalDur time.Duration
 			earliest := poolInsts[0].created
-			latest := poolInsts[0].lastUsed
+			latest := poolInsts[0].lastUsed()
 			minCold := poolInsts[0].inst.ColdStartDuration
 			for _, mi := range poolInsts {
-				totalInv += mi.invokes
-				totalErr += mi.errors
-				totalDur += mi.totalDur
+				totalInv += mi.invokes.Load()
+				totalErr += mi.errors.Load()
+				totalDur += time.Duration(mi.totalNS.Load())
 				if mi.created.Before(earliest) {
 					earliest = mi.created
 				}
-				if mi.lastUsed.After(latest) {
-					latest = mi.lastUsed
+				if lu := mi.lastUsed(); lu.After(latest) {
+					latest = lu
 				}
 				if mi.inst.ColdStartDuration < minCold {
 					minCold = mi.inst.ColdStartDuration

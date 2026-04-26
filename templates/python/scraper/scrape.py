@@ -21,11 +21,12 @@ Each invocation:
 Children run concurrently (thread pool). Each runs as its own gateway
 invocation — visible in the dashboard as separate spawn / invoke events.
 """
+import atexit
 import json
 import os
 import sys
-import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -33,6 +34,17 @@ import cfunc
 import _lib as L
 
 DEFAULT_GATEWAY = os.environ.get("CFUNC_GATEWAY_URL", "http://127.0.0.1:18080")
+DISPATCH_WORKERS = int(os.environ.get("CFUNC_DISPATCH_WORKERS", "16"))
+
+# Module-global executor: dispatching child invocations is fire-and-forget,
+# but bounded so a wide crawl can't spawn unbounded threads. Submitted
+# work that exceeds DISPATCH_WORKERS queues internally — backpressure is
+# inherent. Daemon threads exit with the SDK process.
+_dispatcher = ThreadPoolExecutor(
+    max_workers=DISPATCH_WORKERS,
+    thread_name_prefix="cfunc-dispatch",
+)
+atexit.register(lambda: _dispatcher.shutdown(wait=False, cancel_futures=True))
 
 
 def parse_body(event):
@@ -151,12 +163,12 @@ def handle(event: cfunc.Event, ctx: cfunc.Context) -> cfunc.Response:
                 "gateway_url": gateway_url,
             }
             for l in links:
-                threading.Thread(
-                    target=L.call_function,
-                    args=(gateway_url, "scrape", {**child_body_template, "url": l}),
-                    kwargs={"timeout": 120.0},
-                    daemon=True,
-                ).start()
+                _dispatcher.submit(
+                    L.call_function,
+                    gateway_url, "scrape",
+                    {**child_body_template, "url": l},
+                    120.0,
+                )
 
     return _ok(url, depth, chunks_count, chars_count, skipped,
                t0, dispatched=children_dispatched)

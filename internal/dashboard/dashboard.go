@@ -42,38 +42,57 @@ type RegisterLayerRef struct {
 // (default /_/) that serves the React dashboard bundle plus its
 // WebSocket and JSON APIs.
 type Handler struct {
-	prefix string
-	stats  StatsProvider
-	admin  Admin // optional; nil = admin endpoints disabled
-	logs   *LogCapture
+	prefix         string
+	stats          StatsProvider
+	admin          Admin // optional; nil = admin endpoints disabled
+	logs           *LogCapture
+	allowedOrigins []string // nil/empty -> same-origin only
 
 	files     fs.FS
 	staticSrv http.Handler
 }
 
-// New wires the dashboard. prefix must end with "/" (e.g. "/_/").
-func New(prefix string, stats StatsProvider, logs *LogCapture) *Handler {
-	return NewWithAdmin(prefix, stats, nil, logs)
+// Config bundles dashboard options.
+type Config struct {
+	Prefix string // URL prefix, default "/_/"
+	Stats  StatsProvider
+	Admin  Admin // optional
+	Logs   *LogCapture
+	// AllowedOrigins, if non-empty, lists patterns the WebSocket Accept
+	// will compare the Origin header against (see coder/websocket
+	// AcceptOptions.OriginPatterns). Empty/nil means same-origin only.
+	// Use []string{"*"} to opt-in to allowing every origin (insecure).
+	AllowedOrigins []string
 }
 
-// NewWithAdmin enables runtime function management via /_/api/functions.
+// New wires the dashboard with default config (no admin API).
+func New(prefix string, stats StatsProvider, logs *LogCapture) *Handler {
+	return NewWithConfig(Config{Prefix: prefix, Stats: stats, Logs: logs})
+}
+
+// NewWithAdmin keeps backwards compatibility.
 func NewWithAdmin(prefix string, stats StatsProvider, admin Admin, logs *LogCapture) *Handler {
+	return NewWithConfig(Config{Prefix: prefix, Stats: stats, Admin: admin, Logs: logs})
+}
+
+// NewWithConfig is the full-control constructor.
+func NewWithConfig(cfg Config) *Handler {
+	prefix := cfg.Prefix
 	if prefix == "" || !strings.HasSuffix(prefix, "/") {
 		prefix = "/_/"
 	}
 	sub, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
-		// build artefact missing (forgot `npm run build`); the static
-		// handler will 404 but the APIs still work.
 		sub = distFS
 	}
 	return &Handler{
-		prefix:    prefix,
-		stats:     stats,
-		admin:     admin,
-		logs:      logs,
-		files:     sub,
-		staticSrv: http.StripPrefix(prefix, http.FileServer(http.FS(sub))),
+		prefix:         prefix,
+		stats:          cfg.Stats,
+		admin:          cfg.Admin,
+		logs:           cfg.Logs,
+		allowedOrigins: cfg.AllowedOrigins,
+		files:          sub,
+		staticSrv:      http.StripPrefix(prefix, http.FileServer(http.FS(sub))),
 	}
 }
 

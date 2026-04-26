@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fabianringel/cfunc/internal/spawn"
@@ -81,12 +82,16 @@ type Gateway struct {
 	reaperDone chan struct{}
 }
 
-// pool is the per-function set of warm instances. Bookkeeping mu
-// protects the slice; busy mutexes on individual instances control
-// per-instance acquisition. lifetime* counters survive instance reaps
-// so the dashboard's totals don't reset when warm instances expire.
+// pool is the per-function set of warm instances.
+//
+// Acquire wakes on cond whenever an instance is released (busy.Unlock),
+// a spawn finishes, or the reaper drops an entry. Broadcast is used so
+// every waiter re-evaluates: the alternative — locking on the first
+// instance's busy mutex — serializes all waiters on a single instance
+// while the other slots sit idle.
 type pool struct {
 	mu        sync.Mutex
+	cond      *sync.Cond
 	instances []*managedInstance
 	spawning  int // outstanding spawns counted against maxSize
 	maxSize   int
@@ -97,17 +102,40 @@ type pool struct {
 	lifetimeTotalDur time.Duration
 }
 
-// managedInstance wraps spawn.Instance with bookkeeping. busy is held
-// for the entire duration of an Invoke; the reaper TryLock-skips it.
-type managedInstance struct {
-	inst     *spawn.Instance
-	busy     sync.Mutex
-	created  time.Time
-	lastUsed time.Time
+func newPool(maxSize int) *pool {
+	p := &pool{maxSize: maxSize}
+	p.cond = sync.NewCond(&p.mu)
+	return p
+}
 
-	invokes  uint64
-	errors   uint64
-	totalDur time.Duration
+// managedInstance wraps spawn.Instance with bookkeeping. `busy` is held
+// for the entire duration of an Invoke; the reaper TryLock-skips it.
+//
+// Counters are accessed via atomics so Stats() (which holds only
+// pool.mu, not busy) can read them without a data race. `created` is
+// immutable after construction. `lastUsedNS` is the unix-nano timestamp
+// of the most recent invoke completion.
+type managedInstance struct {
+	inst    *spawn.Instance
+	busy    sync.Mutex
+	created time.Time
+
+	invokes    atomic.Uint64
+	errors     atomic.Uint64
+	totalNS    atomic.Int64 // sum of invoke durations, nanoseconds
+	lastUsedNS atomic.Int64 // unix nanoseconds
+}
+
+func (mi *managedInstance) lastUsed() time.Time {
+	ns := mi.lastUsedNS.Load()
+	if ns == 0 {
+		return mi.created
+	}
+	return time.Unix(0, ns)
+}
+
+func (mi *managedInstance) setLastUsed(t time.Time) {
+	mi.lastUsedNS.Store(t.UnixNano())
 }
 
 func New() *Gateway { return NewWithOptions(Options{}) }
@@ -227,17 +255,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Type: wire.TypeInvoke, ID: reqID, Event: event, Ctx: ctx,
 	})
 	if err != nil {
-		mi.errors++
+		mi.errors.Add(1)
 		g.opts.Logger.Error("invoke failed",
 			"fn", name, "request_id", reqID, "err", err.Error())
 		http.Error(w, "function invoke failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	now := g.opts.Now()
-	mi.lastUsed = now
-	mi.invokes++
+	mi.setLastUsed(now)
+	mi.invokes.Add(1)
 	dur := now.Sub(tStart)
-	mi.totalDur += dur
+	mi.totalNS.Add(int64(dur))
 	g.opts.Logger.Info("invoke",
 		"fn", name,
 		"request_id", reqID,
@@ -291,39 +319,43 @@ func (g *Gateway) acquire(name string) (*managedInstance, func(), error) {
 	}
 	p, ok := g.pools[name]
 	if !ok {
-		p = &pool{maxSize: def.MaxConcurrency}
+		p = newPool(def.MaxConcurrency)
 		g.pools[name] = p
 	}
 	g.mu.Unlock()
 
+	release := func(mi *managedInstance) func() {
+		return func() {
+			mi.busy.Unlock()
+			p.mu.Lock()
+			p.cond.Broadcast()
+			p.mu.Unlock()
+		}
+	}
+
+	p.mu.Lock()
 	for {
-		// Try to grab a free existing instance.
-		p.mu.Lock()
 		for _, mi := range p.instances {
 			if mi.busy.TryLock() {
 				p.mu.Unlock()
-				return mi, func() { mi.busy.Unlock() }, nil
+				return mi, release(mi), nil
 			}
 		}
-		// Spawn capacity? Count in-flight spawns so we don't over-shoot
-		// when many requests race in while the first spawn is still
-		// dialing back.
 		if len(p.instances)+p.spawning < p.maxSize {
 			p.spawning++
 			p.mu.Unlock()
 			inst, err := g.opts.Spawn(def)
+			p.mu.Lock()
+			p.spawning--
 			if err != nil {
-				p.mu.Lock()
-				p.spawning--
+				p.cond.Broadcast() // wake others; some may have capacity now
 				p.mu.Unlock()
 				return nil, nil, err
 			}
 			now := g.opts.Now()
-			mi := &managedInstance{inst: inst, created: now, lastUsed: now}
+			mi := &managedInstance{inst: inst, created: now}
+			mi.setLastUsed(now)
 			mi.busy.Lock()
-
-			p.mu.Lock()
-			p.spawning--
 			p.instances = append(p.instances, mi)
 			poolSize := len(p.instances)
 			p.mu.Unlock()
@@ -334,27 +366,10 @@ func (g *Gateway) acquire(name string) (*managedInstance, func(), error) {
 				"cold_start_ms", inst.ColdStartDuration.Milliseconds(),
 				"pool_size", poolSize,
 			)
-			return mi, func() { mi.busy.Unlock() }, nil
+			return mi, release(mi), nil
 		}
-		// Pool full and all busy. Wait on the oldest instance.
-		first := p.instances[0]
-		p.mu.Unlock()
-		first.busy.Lock()
-		// Re-check: could've been reaped while waiting.
-		p.mu.Lock()
-		stillThere := false
-		for _, mi := range p.instances {
-			if mi == first {
-				stillThere = true
-				break
-			}
-		}
-		p.mu.Unlock()
-		if stillThere {
-			return first, func() { first.busy.Unlock() }, nil
-		}
-		first.busy.Unlock()
-		// Loop and retry.
+		// Pool full and all busy: wait for any release.
+		p.cond.Wait()
 	}
 }
 
@@ -399,12 +414,12 @@ func (g *Gateway) reapOnce() {
 				kept = append(kept, mi)
 				continue
 			}
-			if now.Sub(mi.lastUsed) >= g.opts.IdleTTL {
+			if now.Sub(mi.lastUsed()) >= g.opts.IdleTTL {
 				// Roll counters into pool-level totals so dashboard
 				// metrics don't reset when warm instances expire.
-				p.lifetimeInvokes += mi.invokes
-				p.lifetimeErrors += mi.errors
-				p.lifetimeTotalDur += mi.totalDur
+				p.lifetimeInvokes += mi.invokes.Load()
+				p.lifetimeErrors += mi.errors.Load()
+				p.lifetimeTotalDur += time.Duration(mi.totalNS.Load())
 				victims = append(victims, mi)
 				// keep busy locked so nobody picks it up
 			} else {
@@ -412,7 +427,11 @@ func (g *Gateway) reapOnce() {
 				kept = append(kept, mi)
 			}
 		}
+		reaped := len(p.instances) != len(kept)
 		p.instances = kept
+		if reaped {
+			p.cond.Broadcast() // freed slots; let waiters spawn
+		}
 		p.mu.Unlock()
 	}
 	g.mu.Unlock()

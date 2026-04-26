@@ -147,7 +147,8 @@ func makeSocket() (dir, sockPath string, ln net.Listener, err error) {
 }
 
 // acceptOrKill waits for one accept; on timeout it invokes onTimeout
-// (typically to kill the spawnee) and returns an error.
+// (typically to kill the spawnee), unblocks the inner Accept goroutine
+// by closing the listener, and drains any conn that raced in.
 func acceptOrKill(ln net.Listener, timeout time.Duration, onTimeout func()) (net.Conn, error) {
 	connCh := make(chan net.Conn, 1)
 	errCh := make(chan error, 1)
@@ -167,6 +168,15 @@ func acceptOrKill(ln net.Listener, timeout time.Duration, onTimeout func()) (net
 		return nil, fmt.Errorf("spawn: accept: %w", err)
 	case <-time.After(timeout):
 		onTimeout()
+		// Close the listener so the Accept goroutine unblocks and we
+		// don't leak a fd waiting for an accept that won't come.
+		_ = ln.Close()
+		select {
+		case c := <-connCh:
+			c.Close()
+		case <-errCh:
+		case <-time.After(100 * time.Millisecond):
+		}
 		return nil, errors.New("spawn: timeout waiting for user process to dial")
 	}
 }

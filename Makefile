@@ -11,8 +11,14 @@ dashboard:
 build:
 	go build ./...
 
-# Run all platform-independent tests on the host.
+# Run all platform-independent tests on the host with the race detector
+# enabled. The pool refactor put a couple of atomics in load-bearing
+# paths; -race is the only way to keep them honest.
 test:
+	go test -race ./cmd/... ./internal/... ./sdks/...
+
+# Without -race (faster; for tight loops during dev).
+test-fast:
 	go test ./cmd/... ./internal/... ./sdks/...
 
 # Container-mode tests; require the Lima VM.
