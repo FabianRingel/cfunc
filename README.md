@@ -9,9 +9,12 @@ in Go, Python, or Node, isolated in OCI containers, and scaled to zero
 between calls. Page-cache-shared dependency layers make multi-function
 deployments memory-efficient without orchestrator overhead.
 
-> **Status:** 0.1 — single-node, single-tenant, fully functional.
-> Cluster mode (multi-replica with Postgres-coordinated state) is the
-> next milestone. See [`STRATEGY.md`](./STRATEGY.md) for the roadmap.
+> **Status:** 0.2 — cluster-ready code landed. Multi-replica gateways
+> share state via Postgres (`LISTEN/NOTIFY`), cron has leader election
+> via `pg_try_advisory_lock`, and `internal/layerstore` provides an
+> S3-compatible layer-distribution backend. Helm chart and
+> docker-compose ship with 0.2.1. See [`STRATEGY.md`](./STRATEGY.md)
+> for the roadmap.
 
 ```sh
 # A Go handler, deployed and called in 4 commands:
@@ -56,7 +59,9 @@ about is "three Hetzner servers and Postgres".
 | **Scale-to-zero per function** | Cold-start ~30 ms (Go runc), ~35 ms (Node), ~300 ms (Python). Per-function pool with `MaxConcurrency`. |
 | **Embedded dashboard** | React + WebSocket-streamed metrics, served by the gateway binary. |
 | **ACME / Let's Encrypt** | Built-in via `certmagic`. HTTP-01 and DNS-01, with libdns providers for Cloudflare, Hetzner, Route53, DigitalOcean, RFC2136. |
-| **Cron** | In-process scheduler, JSON-persisted, leader-election ready for cluster mode. |
+| **Cron** | In-process scheduler with Postgres-backed leader election (`pg_try_advisory_lock`); JSON-persisted in single-node mode. |
+| **Cluster mode** | Multi-replica gateways share state via Postgres `LISTEN/NOTIFY`. `cfunc cluster init/status` for setup. Single-node deployments stay zero-config. |
+| **Layer distribution** | `internal/layerstore` with S3-compatible backend (Hetzner Object Storage, RustFS, AWS S3); `Noop` default for single-node. |
 | **Hardened by default** | Token-auth on admin port, loopback default, body-size caps, SSRF block on the scraper template, sanitized subprocess env (admin token never leaks to functions), function-name allow-list, request timeouts. |
 
 Sustained throughput on a single M-series macOS dev box: **~18 500
@@ -72,7 +77,7 @@ req/s, 0 errors**, with the gateway at ~1.5 cores. Cold-starts under
                 │                                    /_/api/* admin API
                 ▼                                    /_/ws    live metrics
         ┌───────────────────┐                              │
-        │ cfunc-gateway     │◄──── Postgres (state, future)│
+        │ cfunc-gateway     │◄──── Postgres (cluster state)│
         │  - HTTP frontend  │                              │
         │  - per-fn pools   │                              │
         │  - layer mounts   │       ┌──────────────────┐   │
@@ -259,7 +264,8 @@ Kubernetes operations team.
 | Release | Highlights | Status |
 |---|---|---|
 | **0.1** | Single-node, single-tenant, all SDKs, dashboard, TLS, builder | ✅ shipped |
-| 0.2 | Cluster mode: Postgres state, OCI-registry layers, multi-replica, leader-elected cron | next |
+| **0.2** | Cluster mode: Postgres state with `LISTEN/NOTIFY`, leader-elected cron, S3-compatible layerstore package | ✅ shipped |
+| 0.2.1 | Helm chart, docker-compose stack, Hetzner quickstart docs, layerstore wired into builder/gateway | next |
 | 0.3 | Multi-tenancy: projects, API keys with scopes, quotas, audit log | planned |
 | 0.4 | Sticky routing, cold-start optimisation, pre-warming | planned |
 | 0.5 | Lambda-parity triggers: API-gateway routes, queue triggers, S3-event triggers | planned |
