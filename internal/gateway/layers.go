@@ -197,11 +197,10 @@ func extractTarGz(rc io.Reader, dst string) (string, error) {
 }
 
 func writeEntry(dst string, hdr *tar.Header, r io.Reader) error {
-	clean := filepath.Clean(hdr.Name)
-	if strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) {
-		return fmt.Errorf("unsafe tar entry: %q", hdr.Name)
+	target, err := safeJoin(dst, hdr.Name)
+	if err != nil {
+		return fmt.Errorf("unsafe tar entry %q: %w", hdr.Name, err)
 	}
-	target := filepath.Join(dst, clean)
 	switch hdr.Typeflag {
 	case tar.TypeDir:
 		return os.MkdirAll(target, 0o755)
@@ -209,7 +208,17 @@ func writeEntry(dst string, hdr *tar.Header, r io.Reader) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777)
+		// O_NOFOLLOW so a pre-existing symlink at target (planted by an
+		// earlier malicious entry) can't redirect the write outside dst.
+		// O_EXCL would be safer still but the layer format permits
+		// duplicate paths; favour interoperability with explicit
+		// remove-then-create.
+		if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		f, err := os.OpenFile(target,
+			os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscallNoFollow,
+			os.FileMode(hdr.Mode)&0o777)
 		if err != nil {
 			return err
 		}
@@ -217,6 +226,18 @@ func writeEntry(dst string, hdr *tar.Header, r io.Reader) error {
 		_, err = io.Copy(f, r)
 		return err
 	case tar.TypeSymlink:
+		// Reject symlinks whose target escapes dst, so a follow-up
+		// regular-file entry can't be written through the link to an
+		// arbitrary path on the host. Both absolute targets and ones
+		// that walk up out of the layer root are forbidden.
+		if filepath.IsAbs(hdr.Linkname) {
+			return fmt.Errorf("symlink %q has absolute target %q", hdr.Name, hdr.Linkname)
+		}
+		linkAbs := filepath.Clean(filepath.Join(filepath.Dir(target), hdr.Linkname))
+		dstAbs := filepath.Clean(dst)
+		if !strings.HasPrefix(linkAbs, dstAbs+string(filepath.Separator)) && linkAbs != dstAbs {
+			return fmt.Errorf("symlink %q escapes layer root", hdr.Name)
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
@@ -225,6 +246,22 @@ func writeEntry(dst string, hdr *tar.Header, r io.Reader) error {
 		// Skip device files, hardlinks, etc. — layers are filesystem trees.
 		return nil
 	}
+}
+
+// safeJoin returns a path inside dst constructed from name, rejecting
+// any component that would escape via "..", absolute paths, or other
+// path-traversal tricks. The result is filepath.Clean-ed.
+func safeJoin(dst, name string) (string, error) {
+	clean := filepath.Clean("/" + name) // root the path so .. can't escape
+	if clean == "/" {
+		return "", fmt.Errorf("empty name")
+	}
+	target := filepath.Join(dst, clean)
+	dstAbs := filepath.Clean(dst)
+	if !strings.HasPrefix(target, dstAbs+string(filepath.Separator)) && target != dstAbs {
+		return "", fmt.Errorf("path escapes root")
+	}
+	return target, nil
 }
 
 func sanitiseDigest(d string) string {

@@ -20,9 +20,11 @@ spec:
         - name: migrate
           image: {{ include "cfunc.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["sh", "-c"]
+          command: ["cfunc"]
           args:
-            - 'cfunc cluster init --dsn "$CFUNC_STATE_DSN"'
+            - "cluster"
+            - "init"
+            - "--dsn=$(CFUNC_STATE_DSN)"
           env:
             {{- include "cfunc.dsnEnv" . | nindent 12 }}
 {{- end }}

@@ -24,15 +24,13 @@ spec:
         - name: builder
           image: {{ include "cfunc.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["sh", "-c"]
+          command: ["cfunc-builder"]
           args:
-            - |
-              exec cfunc-builder \
-                -addr=0.0.0.0:9090 \
-                -allow-python={{ .Values.builder.allowPython | quote }} \
-                {{- if or .Values.builder.token .Values.builder.tokenSecret.name }}
-                -token="$CFUNC_BUILDER_TOKEN"
-                {{- end }}
+            - "-addr=0.0.0.0:9090"
+            - "-allow-python={{ .Values.builder.allowPython }}"
+            {{- if or .Values.builder.token .Values.builder.tokenSecret.name }}
+            - "-token=$(CFUNC_BUILDER_TOKEN)"
+            {{- end }}
           env:
             {{- if or .Values.builder.token .Values.builder.tokenSecret.name }}
             - name: CFUNC_BUILDER_TOKEN

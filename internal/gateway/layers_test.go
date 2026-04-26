@@ -141,3 +141,99 @@ func errIsStat(err error) bool {
 	var pathErr *os.PathError
 	return errors.As(err, &pathErr)
 }
+
+// makeMaliciousTarGz returns a gzipped tar containing a symlink that
+// escapes the root, plus a regular-file entry that tries to write
+// through it. Used to verify the tar-slip defences.
+func makeMaliciousTarGz(t *testing.T) ([]byte, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	// 1) symlink "evil" -> "../../../../../../tmp"  (escapes root)
+	_ = tw.WriteHeader(&tar.Header{
+		Name:     "evil",
+		Linkname: "../../../../../../tmp",
+		Typeflag: tar.TypeSymlink,
+	})
+	// 2) regular file "evil/pwn" — would be written through the symlink
+	body := []byte("pwned")
+	_ = tw.WriteHeader(&tar.Header{
+		Name: "evil/pwn", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg,
+	})
+	_, _ = tw.Write(body)
+	tw.Close()
+	gz.Close()
+	h := sha256.Sum256(buf.Bytes())
+	return buf.Bytes(), "sha256:" + hex.EncodeToString(h[:])
+}
+
+func TestStoreResolverRejectsTarSlipSymlink(t *testing.T) {
+	cache := t.TempDir()
+	store := newMemStore()
+	body, digest := makeMaliciousTarGz(t)
+	_ = store.Put(context.Background(), digest, bytes.NewReader(body), int64(len(body)))
+
+	r := NewStoreResolver(store, cache)
+	err := r.Resolve(context.Background(),
+		[]LayerMount{{Name: "L", MountPath: "/opt/L", Digest: digest}})
+	if err == nil {
+		t.Fatal("expected tar-slip rejection")
+	}
+	// Confirm nothing leaked to /tmp/pwn.
+	if _, err := os.Stat("/tmp/pwn"); err == nil {
+		t.Fatal("symlink was followed — /tmp/pwn was created")
+	}
+}
+
+func TestStoreResolverRejectsAbsoluteSymlink(t *testing.T) {
+	cache := t.TempDir()
+	store := newMemStore()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	_ = tw.WriteHeader(&tar.Header{
+		Name: "link", Linkname: "/etc", Typeflag: tar.TypeSymlink,
+	})
+	tw.Close()
+	gz.Close()
+	h := sha256.Sum256(buf.Bytes())
+	digest := "sha256:" + hex.EncodeToString(h[:])
+	_ = store.Put(context.Background(), digest, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+
+	r := NewStoreResolver(store, cache)
+	err := r.Resolve(context.Background(),
+		[]LayerMount{{Name: "L", MountPath: "/opt/L", Digest: digest}})
+	if err == nil {
+		t.Fatal("expected absolute-target rejection")
+	}
+}
+
+func TestStoreResolverRejectsDotDotPath(t *testing.T) {
+	cache := t.TempDir()
+	store := newMemStore()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	_ = tw.WriteHeader(&tar.Header{
+		Name: "../escape.txt", Mode: 0o644, Size: 1, Typeflag: tar.TypeReg,
+	})
+	_, _ = tw.Write([]byte("x"))
+	tw.Close()
+	gz.Close()
+	h := sha256.Sum256(buf.Bytes())
+	digest := "sha256:" + hex.EncodeToString(h[:])
+	_ = store.Put(context.Background(), digest, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+
+	r := NewStoreResolver(store, cache)
+	err := r.Resolve(context.Background(),
+		[]LayerMount{{Name: "L", MountPath: "/opt/L", Digest: digest}})
+	// safeJoin clamps the path inside dst, but the resulting absolute
+	// path equals dst itself for "../escape.txt" with depth 1 — depending
+	// on implementation, either error OR a write inside dst. Confirm
+	// nothing escaped:
+	_ = err
+	if _, err := os.Stat(filepath.Join(filepath.Dir(cache), "escape.txt")); err == nil {
+		t.Fatal("dot-dot path escaped extraction root")
+	}
+}

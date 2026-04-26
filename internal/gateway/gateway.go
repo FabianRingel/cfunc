@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fabianringel/cfunc/internal/auth"
 	"github.com/fabianringel/cfunc/internal/quota"
 	"github.com/fabianringel/cfunc/internal/spawn"
 	"github.com/fabianringel/cfunc/internal/state"
@@ -481,6 +482,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		registeredProject = def.Project
 	}
 	if project != "" && project != registeredProject {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Cross-project isolation: an authenticated identity scoped to one
+	// project must not invoke functions of another. Identity is set by
+	// auth middleware on the public port; if no middleware ran (e.g.
+	// loopback dev mode without auth) Identity is zero-valued, KeyID
+	// empty, and we skip the check — matching the legacy single-tenant
+	// behaviour. Cluster admins (KeyID="admin-token", Project="*") pass.
+	id := auth.FromContext(r.Context())
+	if id.KeyID != "" && id.Project != "*" && id.Project != registeredProject {
 		http.NotFound(w, r)
 		return
 	}

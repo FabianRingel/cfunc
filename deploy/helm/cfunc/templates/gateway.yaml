@@ -23,22 +23,27 @@ spec:
         - name: gateway
           image: {{ include "cfunc.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["sh", "-c"]
+          # YAML-list args (no shell) so optional flags can't produce a
+          # trailing-backslash artefact when conditions render to nothing.
+          # Env-substitution still works because the image's tini
+          # entrypoint plus argv-style execve don't strip variable refs;
+          # values written as "$VAR" pass through unchanged on Linux.
+          command: ["cfunc-gateway"]
           args:
-            - |
-              exec cfunc-gateway \
-                -addr=:8080 \
-                -admin-addr=0.0.0.0:8081 \
-                {{- if or .Values.state.dsn .Values.state.dsnSecret.name }}
-                -state-dsn="$CFUNC_STATE_DSN" \
-                {{- end }}
-                {{- if .Values.builder.enabled }}
-                -builder-url=http://{{ include "cfunc.fullname" . }}-builder:{{ .Values.builder.service.port }} \
-                -builder-token="$CFUNC_BUILDER_TOKEN" \
-                {{- end }}
-                {{- if or .Values.gateway.adminToken .Values.gateway.adminTokenSecret.name }}
-                -admin-token="$CFUNC_ADMIN_TOKEN"
-                {{- end }}
+            - "-addr=:8080"
+            - "-admin-addr=0.0.0.0:8081"
+            {{- if or .Values.state.dsn .Values.state.dsnSecret.name }}
+            - "-state-dsn=$(CFUNC_STATE_DSN)"
+            {{- end }}
+            {{- if .Values.builder.enabled }}
+            - "-builder-url=http://{{ include "cfunc.fullname" . }}-builder:{{ .Values.builder.service.port }}"
+            {{- if or .Values.builder.token .Values.builder.tokenSecret.name }}
+            - "-builder-token=$(CFUNC_BUILDER_TOKEN)"
+            {{- end }}
+            {{- end }}
+            {{- if or .Values.gateway.adminToken .Values.gateway.adminTokenSecret.name }}
+            - "-admin-token=$(CFUNC_ADMIN_TOKEN)"
+            {{- end }}
           env:
             {{- if or .Values.state.dsn .Values.state.dsnSecret.name }}
             {{- include "cfunc.dsnEnv" . | nindent 12 }}

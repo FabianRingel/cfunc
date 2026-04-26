@@ -101,14 +101,24 @@ func (l *Limiter) Allow(project, kind string) bool {
 		atomic.AddInt64(cnt, 1)
 		return true
 	}
-	// Reserve a slot first; revert if we overshoot. Atomicity matters
-	// across concurrent Allows on the same key.
-	new := atomic.AddInt64(cnt, 1)
-	if remote+new > limit {
-		atomic.AddInt64(cnt, -1)
-		return false
+	// CAS loop: read current, decide, swap. The "AddInt64-then-revert"
+	// shape we used to have produced both spurious denials *and*
+	// spurious admits under contention because two goroutines could
+	// simultaneously cross the limit and either both revert (false
+	// denial) or both observe a post-revert state (false admit).
+	// CompareAndSwap gives us a single atomic decision per Allow.
+	for {
+		cur := atomic.LoadInt64(cnt)
+		if remote+cur+1 > limit {
+			return false
+		}
+		if atomic.CompareAndSwapInt64(cnt, cur, cur+1) {
+			return true
+		}
+		// CAS failed: another goroutine raced ahead. Retry with the
+		// fresh value; the loop terminates because either we succeed
+		// or we overshoot the limit and return false.
 	}
-	return true
 }
 
 // Observe is a non-rate-limited counter for kinds that are reported

@@ -4,11 +4,14 @@ package quota
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fabianringel/cfunc/internal/state"
 )
+
+func atomicAdd(p *int64, n int64) { atomic.AddInt64(p, n) }
 
 func TestAllowUnlimitedWhenNoQuota(t *testing.T) {
 	s := state.NewInMemStore()
@@ -61,6 +64,39 @@ func TestFlushSyncsToStore(t *testing.T) {
 	got, _ := s.GetQuotaUsage(ctx, "acme", KindRequestsPerMin, now)
 	if got != 7 {
 		t.Fatalf("usage in store: got %d, want 7", got)
+	}
+}
+
+func TestAllowConcurrentRespectsExactLimit(t *testing.T) {
+	// 100 goroutines each call Allow once against a per-bucket limit of 50.
+	// Exactly 50 must succeed. The pre-CAS implementation produced both
+	// false denials and false admits under contention.
+	s := state.NewInMemStore()
+	ctx := context.Background()
+	_ = s.CreateProject(ctx, state.Project{Name: "acme"})
+	_ = s.SetQuota(ctx, "acme", KindRequestsPerMin, 50)
+
+	l := New(s, Options{})
+	if err := l.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 100
+	var allowed int64
+	done := make(chan struct{}, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			if l.Allow("acme", KindRequestsPerMin) {
+				atomicAdd(&allowed, 1)
+			}
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < n; i++ {
+		<-done
+	}
+	if allowed != 50 {
+		t.Fatalf("got %d allowed, want exactly 50", allowed)
 	}
 }
 
