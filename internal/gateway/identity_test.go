@@ -4,43 +4,66 @@ package gateway_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/fabianringel/cfunc/internal/auth"
 	"github.com/fabianringel/cfunc/internal/gateway"
+	"github.com/fabianringel/cfunc/internal/spawn"
 	"github.com/fabianringel/cfunc/internal/state"
 )
 
+// spySpawner returns an error and increments a counter. We never let
+// the spawn complete because that would require a real binary, but
+// spawnCalled tells us whether ServeHTTP got past the project check
+// far enough to reach acquire.
+func spySpawner(counter *int64) gateway.Spawner {
+	return func(_ gateway.FunctionDef) (*spawn.Instance, error) {
+		atomic.AddInt64(counter, 1)
+		return nil, errors.New("spy spawner: refused")
+	}
+}
+
 // TestServeHTTPRejectsCrossProjectIdentity proves that an authenticated
 // identity scoped to project A cannot invoke a function registered to
-// project B, regardless of which routing form is used.
+// project B. The strong invariant: when the cross-project check fires,
+// the spawner is never called. We assert on the spawner-call-count
+// rather than on the HTTP status alone — that way the test can't pass
+// "for the wrong reason" if some unrelated 5xx happens to surface.
 func TestServeHTTPRejectsCrossProjectIdentity(t *testing.T) {
 	store := state.NewInMemStore()
 	_ = store.CreateProject(context.Background(), state.Project{Name: "owner"})
 
-	gw := gateway.NewWithOptions(gateway.Options{Store: store})
+	var spawnCalls int64
+	gw := gateway.NewWithOptions(gateway.Options{
+		Store: store,
+		Spawn: spySpawner(&spawnCalls),
+	})
 	defer gw.Close()
 
-	// Register a function owned by project "owner" via the store
-	// directly, then wait for the gateway's Watch loop to ingest it.
 	if err := gw.RegisterDef(gateway.FunctionDef{
 		Name: "victim", Binary: "/usr/bin/true", Project: "owner",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Inject an "intruder" identity (scope: invoke on project "intruder")
-		// before the gateway sees the request.
-		id := auth.Identity{KeyID: "ck_intruder", Project: "intruder", Scopes: []string{"invoke"}}
-		gw.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
-	}))
-	defer srv.Close()
+	withIdentity := func(id auth.Identity) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gw.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
+		}))
+	}
+
+	intruder := withIdentity(auth.Identity{
+		KeyID: "ck_intruder", Project: "intruder", Scopes: []string{"invoke"},
+	})
+	defer intruder.Close()
 
 	for _, path := range []string{"/fn/victim", "/v1/owner/fn/victim"} {
-		resp, err := http.Get(srv.URL + path)
+		atomic.StoreInt64(&spawnCalls, 0)
+		resp, err := http.Get(intruder.URL + path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,40 +71,45 @@ func TestServeHTTPRejectsCrossProjectIdentity(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("%s: cross-project identity should get 404, got %d", path, resp.StatusCode)
 		}
+		if got := atomic.LoadInt64(&spawnCalls); got != 0 {
+			t.Errorf("%s: spawner was called %d times — project check did not fire", path, got)
+		}
 	}
 
-	// Sanity: an identity scoped to "owner" passes the project check.
-	// (We don't actually spawn /usr/bin/true here because that path
-	// triggers the spawn machinery; the project-check rejection runs
-	// before spawn, so 404 means the check fired.)
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := auth.Identity{KeyID: "ck_owner", Project: "owner", Scopes: []string{"invoke"}}
-		gw.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
-	}))
-	defer srv2.Close()
-
-	resp, err := http.Get(srv2.URL + "/v1/owner/fn/victim")
+	// Same-project identity: project check passes, so the gateway
+	// proceeds to acquire and the spy spawner gets called. We don't
+	// care about the resulting HTTP status — only that spawn was
+	// reached, which is the inverse evidence that the cross-project
+	// check is what stopped the intruder above.
+	owner := withIdentity(auth.Identity{
+		KeyID: "ck_owner", Project: "owner", Scopes: []string{"invoke"},
+	})
+	defer owner.Close()
+	atomic.StoreInt64(&spawnCalls, 0)
+	resp, err := http.Get(owner.URL + "/v1/owner/fn/victim")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	// /usr/bin/true exists on Linux test hosts; on macOS the spawn might
-	// fail with a different status. We only care that the response is
-	// NOT 404, which would indicate the cross-project check rejected it.
-	if resp.StatusCode == http.StatusNotFound {
-		t.Errorf("same-project identity should pass project check, got 404")
+	if got := atomic.LoadInt64(&spawnCalls); got == 0 {
+		t.Errorf("same-project identity: spawner not reached — project check incorrectly rejected")
 	}
 }
 
 // TestServeHTTPNoIdentitySkipsCrossProjectCheck ensures the legacy
 // single-tenant deployment (no auth middleware) keeps working: a
-// request with no identity in the context isn't blocked.
+// request with no identity in the context proceeds past the project
+// check and reaches the spawner.
 func TestServeHTTPNoIdentitySkipsCrossProjectCheck(t *testing.T) {
 	store := state.NewInMemStore()
 	_ = store.CreateProject(context.Background(), state.Project{Name: "owner"})
-	gw := gateway.NewWithOptions(gateway.Options{Store: store})
-	defer gw.Close()
 
+	var spawnCalls int64
+	gw := gateway.NewWithOptions(gateway.Options{
+		Store: store,
+		Spawn: spySpawner(&spawnCalls),
+	})
+	defer gw.Close()
 	if err := gw.RegisterDef(gateway.FunctionDef{
 		Name: "fn", Binary: "/usr/bin/true", Project: "owner",
 	}); err != nil {
@@ -89,9 +117,12 @@ func TestServeHTTPNoIdentitySkipsCrossProjectCheck(t *testing.T) {
 	}
 	srv := httptest.NewServer(gw)
 	defer srv.Close()
-	resp, _ := http.Get(srv.URL + "/fn/fn")
-	if resp.StatusCode == http.StatusNotFound {
-		t.Errorf("no-identity request should not 404 on cross-project check")
+	resp, err := http.Get(srv.URL + "/fn/fn")
+	if err != nil {
+		t.Fatal(err)
 	}
 	resp.Body.Close()
+	if atomic.LoadInt64(&spawnCalls) == 0 {
+		t.Error("no-identity request should reach spawner; project check fired incorrectly")
+	}
 }
