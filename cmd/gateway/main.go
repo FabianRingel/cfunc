@@ -85,6 +85,11 @@ func main() {
 		"Postgres DSN for cluster-coordinated state (functions, crons). "+
 			"Empty = single-node in-memory store.")
 
+	dialTimeout := flag.Duration("spawn-dial-timeout", 0,
+		"how long to wait for a freshly spawned function process to dial "+
+			"back (default 5s). Bump for heavy Python deps like "+
+			"sentence-transformers / pandas where import time alone exceeds 5s.")
+
 	builderURL := flag.String("builder-url", "",
 		"base URL of cfunc-builder (e.g. http://10.0.0.5:9090). "+
 			"When set, /_/api/layers/build is forwarded to the builder.")
@@ -125,6 +130,9 @@ func main() {
 		slog.Info("state: postgres mode", "dsn_host", redactDSN(*stateDSN))
 	}
 
+	if *dialTimeout > 0 {
+		gateway.DefaultDialTimeout = *dialTimeout
+	}
 	gw := gateway.NewWithOptions(gateway.Options{Logger: logger, Store: stateStore})
 	if *binary != "" {
 		n := *name

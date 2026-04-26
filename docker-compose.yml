@@ -22,7 +22,12 @@ x-cfunc-image: &cfunc-image
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector is a postgres image with the vector extension
+    # pre-installed. Drop-in replacement for the upstream image (same
+    # ports, same protocol) — cfunc itself doesn't use vector, but
+    # cfunc-demos/rag does, and an operator running pgvector here
+    # makes the RAG demo work without a sidecar.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: cfunc
       POSTGRES_PASSWORD: cfunc
