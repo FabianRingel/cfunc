@@ -9,6 +9,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/fabianringel/cfunc/internal/spawn"
+	"github.com/fabianringel/cfunc/internal/state"
 	"github.com/fabianringel/cfunc/internal/wire"
 )
 
@@ -93,18 +95,27 @@ type Options struct {
 	Now          func() time.Time
 	Spawn        Spawner
 	Logger       *slog.Logger
+
+	// Store is the persistence backend for function definitions and
+	// cron jobs. nil → an in-process state.NewInMemStore() is used,
+	// matching the pre-cluster behaviour.
+	Store state.Store
 }
 
 type Gateway struct {
 	opts      Options
 	startedAt time.Time
+	store     state.Store
 
 	mu        sync.Mutex
-	functions map[string]FunctionDef
+	functions map[string]FunctionDef // read-cache, kept in sync via Watch
 	pools     map[string]*pool
 
 	stopReaper chan struct{}
 	reaperDone chan struct{}
+
+	stopWatch chan struct{}
+	watchDone chan struct{}
 }
 
 // pool is the per-function set of warm instances.
@@ -181,34 +192,86 @@ func NewWithOptions(opts Options) *Gateway {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	if opts.Store == nil {
+		opts.Store = state.NewInMemStore()
+	}
 	g := &Gateway{
 		opts:       opts,
+		store:      opts.Store,
 		startedAt:  opts.Now(),
 		functions:  map[string]FunctionDef{},
 		pools:      map[string]*pool{},
 		stopReaper: make(chan struct{}),
 		reaperDone: make(chan struct{}),
+		stopWatch:  make(chan struct{}),
+		watchDone:  make(chan struct{}),
 	}
+	g.bootstrapCacheFromStore()
+	go g.watchStore()
 	go g.reapLoop()
 	return g
 }
 
-// Register stores a FunctionDef for routing. Panics on invalid name —
-// intended only for static (CLI-flag) registration where the operator
-// can fix the input.
-func (g *Gateway) Register(name, binary string) {
-	if err := g.RegisterDef(FunctionDef{Name: name, Binary: binary}); err != nil {
-		panic(err)
+// bootstrapCacheFromStore populates the local read-cache once at start
+// so the first incoming request doesn't have to wait for a Watch event
+// to arrive. Errors are logged but non-fatal — Watch will catch up.
+//
+// Goes through applyPut so defaults (MaxConcurrency, …) are normalised
+// the same way as for any later registration.
+func (g *Gateway) bootstrapCacheFromStore() {
+	defs, err := g.store.ListFunctions(context.Background())
+	if err != nil {
+		g.opts.Logger.Error("state: bootstrap list failed", "err", err)
+		return
+	}
+	for _, d := range defs {
+		g.applyPut(fromStateDef(d))
 	}
 }
 
-// RegisterDef registers a function. If one with the same name exists,
-// it's replaced and any pooled warm instances are shut down. Returns
-// ErrInvalidName if the name violates the allow-list.
-func (g *Gateway) RegisterDef(def FunctionDef) error {
-	if !IsValidFunctionName(def.Name) {
-		return ErrInvalidName
+// watchStore is the long-lived loop that mirrors store mutations into
+// the local cache. Runs until stopWatch closes (Close).
+func (g *Gateway) watchStore() {
+	defer close(g.watchDone)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch, err := g.store.Watch(ctx)
+	if err != nil {
+		g.opts.Logger.Error("state: watch failed", "err", err)
+		return
 	}
+	for {
+		select {
+		case <-g.stopWatch:
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			g.applyEvent(ctx, ev)
+		}
+	}
+}
+
+func (g *Gateway) applyEvent(ctx context.Context, ev state.Event) {
+	switch ev.Kind {
+	case state.EventFunctionPut:
+		def, err := g.store.GetFunction(ctx, ev.Name)
+		if err != nil {
+			g.opts.Logger.Warn("state: get after put", "name", ev.Name, "err", err)
+			return
+		}
+		g.applyPut(fromStateDef(def))
+	case state.EventFunctionDelete:
+		g.applyDelete(ev.Name)
+	}
+}
+
+// applyPut updates the cache and tears down any pool from the previous
+// version (definition may have changed: env, layers, max-concurrency).
+// Mirrors what the old in-process RegisterDef did.
+func (g *Gateway) applyPut(def FunctionDef) {
 	if def.MaxConcurrency <= 0 {
 		def.MaxConcurrency = DefaultMaxConcurrency
 	}
@@ -220,13 +283,12 @@ func (g *Gateway) RegisterDef(def FunctionDef) error {
 	if oldPool != nil {
 		oldPool.closeAll()
 	}
-	return nil
 }
 
-// Unregister removes a function and its pooled instances.
-func (g *Gateway) Unregister(name string) bool {
+// applyDelete removes a function from the cache and shuts down its
+// pool.
+func (g *Gateway) applyDelete(name string) {
 	g.mu.Lock()
-	_, hadDef := g.functions[name]
 	old := g.pools[name]
 	delete(g.functions, name)
 	delete(g.pools, name)
@@ -234,13 +296,87 @@ func (g *Gateway) Unregister(name string) bool {
 	if old != nil {
 		old.closeAll()
 	}
+}
+
+func fromStateDef(d state.FunctionDef) FunctionDef {
+	out := FunctionDef{
+		Name:           d.Name,
+		Binary:         d.Binary,
+		Env:            append([]string(nil), d.Env...),
+		MaxConcurrency: d.MaxConcurrency,
+	}
+	for _, l := range d.Layers {
+		out.Layers = append(out.Layers, LayerMount{
+			Name: l.Name, HostPath: l.HostPath, MountPath: l.MountPath,
+		})
+	}
+	return out
+}
+
+func toStateDef(d FunctionDef) state.FunctionDef {
+	out := state.FunctionDef{
+		Name:           d.Name,
+		Binary:         d.Binary,
+		Env:            append([]string(nil), d.Env...),
+		MaxConcurrency: d.MaxConcurrency,
+	}
+	for _, l := range d.Layers {
+		out.Layers = append(out.Layers, state.LayerMount{
+			Name: l.Name, HostPath: l.HostPath, MountPath: l.MountPath,
+		})
+	}
+	return out
+}
+
+// Register stores a FunctionDef for routing. Panics on invalid name —
+// intended only for static (CLI-flag) registration where the operator
+// can fix the input.
+func (g *Gateway) Register(name, binary string) {
+	if err := g.RegisterDef(FunctionDef{Name: name, Binary: binary}); err != nil {
+		panic(err)
+	}
+}
+
+// RegisterDef writes a function definition through to the store. The
+// local cache update arrives via the Watch loop just like for any
+// other replica's writes — there's exactly one code path that mutates
+// gateway state, no matter who initiated the change.
+func (g *Gateway) RegisterDef(def FunctionDef) error {
+	if !IsValidFunctionName(def.Name) {
+		return ErrInvalidName
+	}
+	if def.MaxConcurrency <= 0 {
+		def.MaxConcurrency = DefaultMaxConcurrency
+	}
+	if err := g.store.PutFunction(context.Background(), toStateDef(def)); err != nil {
+		return err
+	}
+	// Apply locally too so behaviour is synchronous from the caller's
+	// perspective (HTTP register → next HTTP call sees it). Watch will
+	// also fire and applyPut is idempotent.
+	g.applyPut(def)
+	return nil
+}
+
+// Unregister deletes a function via the store. Returns whether the
+// function existed at delete time. Local cache update is synchronous;
+// peer replicas pick it up via Watch.
+func (g *Gateway) Unregister(name string) bool {
+	g.mu.Lock()
+	_, hadDef := g.functions[name]
+	g.mu.Unlock()
+	_ = g.store.DeleteFunction(context.Background(), name)
+	g.applyDelete(name)
 	return hadDef
 }
 
-// Close terminates everything.
+// Close terminates everything: watcher, reaper, all warm pools.
 func (g *Gateway) Close() {
 	close(g.stopReaper)
 	<-g.reaperDone
+
+	close(g.stopWatch)
+	<-g.watchDone
 
 	g.mu.Lock()
 	pools := g.pools
