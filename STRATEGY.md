@@ -122,8 +122,9 @@ Isolation auf Container-Ebene.**
 
 | Release | Inhalt | Aufwand |
 |---|---|---|
-| **0.1 — heute** | Single-Node, 1 Tenant, voll funktional. Wire/Pool/Layers/Scheduler/Dashboard/TLS/Builder steht | ✅ |
-| **0.2 — Cluster-Ready** | Postgres-State (`internal/state`), OCI-Layer-Registry, Multi-Replica, Cron-Leader-Election. Helm-Chart + docker-compose | ~3 Wochen |
+| **0.1** | Single-Node, 1 Tenant, voll funktional. Wire/Pool/Layers/Scheduler/Dashboard/TLS/Builder steht | ✅ |
+| **0.2 — Cluster-Ready** | `internal/state` mit Postgres-Backend + LISTEN/NOTIFY, Cron-Leader-Election via `pg_try_advisory_lock`, `cfunc cluster init/status`, Gateway `-state-dsn`. `internal/layerstore` mit S3-Backend (Hetzner Object Storage / MinIO / AWS) als isolierte, getestete Schicht. **Layer-Distribution-Verdrahtung folgt mit 0.3**, weil sie eine Erweiterung des Layer-Adressmodells (Digest in `LayerMount`) erfordert, die mit dem Multi-Tenancy-Refactor zusammen passt. | ✅ Code-Side |
+| **0.2.1** | Helm-Chart + docker-compose, Hetzner-Quickstart-Doku, layerstore-Verdrahtung wenn 0.3 sich verzögert | offen |
 | **0.3 — Multi-Tenancy** | Projekte, API-Keys, Quotas, Audit-Log, Per-Projekt-Routing | ~2 Wochen |
 | **0.4 — Sticky-Routing & Performance** | Eigener Router oder HAProxy-Recipe, Cold-Start-Optimierungen, Pre-Warming-API (`min_warm: N`) | ~2 Wochen |
 | **0.5 — Lambda-Parity-Trigger** | API-Gateway-Routes (Path/Method/Headers), Queue-Trigger via NATS oder Postgres, S3-Event-Trigger (MinIO-kompatibel) | ~3 Wochen |
@@ -314,3 +315,4 @@ Was wir explizit garantieren wollen, dokumentiert in `docs/compliance/`:
 |---|---|
 | 2026-04-26 | Initiale Version, geschrieben in Sequenz mit Single-Node 0.1-Abschluss |
 | 2026-04-26 | Entscheidung 7.7: **Apache 2.0** als OSS-Lizenz. LICENSE + NOTICE angelegt, SPDX-Header in allen Source-Files. |
+| 2026-04-26 | 0.2 Code-Side abgeschlossen: A1 (Store-Interface + InMem), A2 (PostgresStore + LISTEN/NOTIFY), A3 (StateScheduler + Leader-Election via `pg_try_advisory_lock`), C (cluster CLI + Gateway `-state-dsn`), B (`internal/layerstore` mit S3-Backend). Live-verifiziert: PUT auf Replica A → binnen 1 s sichtbar auf Replica B. Layer-Distribution-Verdrahtung auf 0.3 verschoben (braucht Digest-in-LayerMount). |
