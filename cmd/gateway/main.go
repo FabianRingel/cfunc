@@ -30,8 +30,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -74,6 +77,14 @@ func main() {
 
 	adminTLSDomain := flag.String("admin-tls-domain", "",
 		"comma-separated domains for ACME on the admin port; empty = HTTP")
+
+	builderURL := flag.String("builder-url", "",
+		"base URL of cfunc-builder (e.g. http://10.0.0.5:9090). "+
+			"When set, /_/api/layers/build is forwarded to the builder.")
+	builderTokenFile := flag.String("builder-token-file", "",
+		"file with the bearer token shared with the builder")
+	builderToken := flag.String("builder-token", "",
+		"literal bearer token for the builder (env/file preferred)")
 
 	flag.Parse()
 
@@ -119,10 +130,24 @@ func main() {
 				origins = append(origins, o)
 			}
 		}
+		var bldr dashboard.LayerBuilder
+		if *builderURL != "" {
+			bToken, err := auth.LoadToken(*builderTokenFile, "CFUNC_BUILDER_TOKEN", *builderToken)
+			if err != nil {
+				slog.Error("builder token load", "err", err)
+				os.Exit(1)
+			}
+			if bToken == "" {
+				slog.Error("-builder-url set but no builder token configured")
+				os.Exit(2)
+			}
+			bldr = &builderClient{baseURL: strings.TrimRight(*builderURL, "/"), token: bToken}
+		}
 		dh := dashboard.NewWithConfig(dashboard.Config{
 			Prefix:         *dashPrefix,
 			Stats:          statsAdapter{gw},
 			Admin:          adminAdapter{gw},
+			Builder:        bldr,
 			Logs:           capture,
 			AllowedOrigins: origins,
 		})
@@ -286,6 +311,34 @@ func isLoopback(addr string) bool {
 type configError struct{ tag, msg string }
 
 func (e *configError) Error() string { return e.tag + ": " + e.msg }
+
+// builderClient is a thin HTTP wrapper around the cfunc-builder
+// daemon. Exposes dashboard.LayerBuilder; the dashboard relays the
+// builder's response to the operator unmodified.
+type builderClient struct {
+	baseURL string
+	token   string
+}
+
+func (c *builderClient) BuildLayer(spec []byte) ([]byte, error) {
+	req, err := http.NewRequest("POST", c.baseURL+"/build", bytes.NewReader(spec))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	cl := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("builder unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("builder returned %d: %s", resp.StatusCode, body)
+	}
+	return body, nil
+}
 
 type statsAdapter struct{ g *gateway.Gateway }
 

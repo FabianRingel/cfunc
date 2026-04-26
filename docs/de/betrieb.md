@@ -195,6 +195,56 @@ cfunc-scheduler -store=/var/lib/cfunc/cron.json -gateway=http://127.0.0.1:8080
 Storage: einfache JSON-Datei. Persistent über Restarts. Für Multi-Host
 später swappable (SQLite ist offen).
 
+## Layer-Builder (`cmd/builder`)
+
+Layers werden **server-seitig** gebaut, nicht auf der Operator-Workstation.
+Das schließt den klassischen Supply-Chain-Vektor (kompromittierte
+Dev-Maschine produziert kompromittierten Layer) und erzwingt
+Hash-Pinning.
+
+**Builder starten** (auf einem dedizierten Build-Host):
+
+```sh
+echo "long-random-secret" > /etc/cfunc/builder.token
+chmod 600 /etc/cfunc/builder.token
+cfunc-builder \
+  -addr=127.0.0.1:9090 \
+  -token-file=/etc/cfunc/builder.token \
+  -allow-python="3.11,3.12" \
+  -allow-index="https://pypi.org/simple"
+```
+
+**Gateway ans Builder anschließen:**
+
+```sh
+cfunc-gateway ... \
+  -builder-url=http://127.0.0.1:9090 \
+  -builder-token-file=/etc/cfunc/builder.token
+```
+
+**Layer bauen über die CLI:**
+
+Die `requirements.txt` muss **vollständig hash-gepinnt** sein. Sonst
+wird der Build mit 400 abgelehnt, bevor `pip` überhaupt läuft.
+
+```sh
+# requirements.txt:
+#   numpy==1.26.0 \
+#       --hash=sha256:abc...
+#   beautifulsoup4==4.14.3 \
+#       --hash=sha256:def...
+
+cfunc layer build-python \
+  --name pylib --version 1.0.0 \
+  --requirements ./requirements.txt \
+  --python 3.11 \
+  --gateway http://127.0.0.1:8081 \
+  --token-file /etc/cfunc/admin.token
+```
+
+Hash-Pinning erzeugen mit `pip-compile --generate-hashes` aus
+`pip-tools` oder mit `pip install pip-compile && pip-compile`.
+
 ## Layer-Store
 
 Layers sind **content-addressed Verzeichnisse** auf dem Host, die in

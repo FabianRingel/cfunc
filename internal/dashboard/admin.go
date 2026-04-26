@@ -2,10 +2,13 @@ package dashboard
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
 )
+
+func readAll(r io.Reader) ([]byte, error) { return io.ReadAll(r) }
 
 // MaxConcurrencyCeiling caps user-supplied MaxConcurrency to prevent a
 // register call from spawning thousands of instances. Operators who
@@ -16,6 +19,10 @@ const MaxConcurrencyCeiling = 256
 // realistic register payload is a few KiB; 256 KiB leaves comfortable
 // headroom while preventing 1 GB JSON-bombs from authenticated callers.
 const MaxAdminBody = 256 * 1024
+
+// MaxBuildSpecBody is bigger than MaxAdminBody because requirements
+// files for big projects can grow. Still bounded.
+const MaxBuildSpecBody = 4 * 1024 * 1024
 
 // serveFunctions handles the collection endpoint:
 //   POST /_/api/functions   register or replace
@@ -76,6 +83,34 @@ func (h *Handler) serveFunctions(w http.ResponseWriter, r *http.Request) {
 		"name":     req.Name,
 		"endpoint": "/fn/" + req.Name,
 	})
+}
+
+// serveLayerBuild forwards the spec body to the configured LayerBuilder
+// (typically the cfunc-builder daemon) and relays its response to the
+// caller untouched.
+func (h *Handler) serveLayerBuild(w http.ResponseWriter, r *http.Request) {
+	if h.builder == nil {
+		http.Error(w, "builder not configured", http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, MaxBuildSpecBody)
+	body, err := readAll(r.Body)
+	if err != nil {
+		http.Error(w, "request body too large or unreadable", http.StatusRequestEntityTooLarge)
+		return
+	}
+	resp, err := h.builder.BuildLayer(body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(resp)
 }
 
 // serveFunction handles the item endpoint:

@@ -3,15 +3,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
+	"time"
 
+	builderpkg "github.com/fabianringel/cfunc/internal/builder"
 	"github.com/fabianringel/cfunc/internal/layers"
 	"github.com/fabianringel/cfunc/internal/scheduler"
 )
@@ -125,44 +131,117 @@ func layerAdd(args []string) {
 	_ = enc.Encode(m)
 }
 
+// layerBuildPython submits a build spec to the gateway's admin API.
+// All actual work — pip install, hash verification, tarball — happens
+// server-side. The CLI only sends the spec and stores the resulting
+// layer locally.
 func layerBuildPython(args []string) {
 	fs := flag.NewFlagSet("layer build-python", flag.ExitOnError)
 	name := fs.String("name", "", "layer name (required)")
 	version := fs.String("version", "", "layer version (required)")
-	req := fs.String("requirements", "", "pip requirements.txt (required)")
-	python := fs.String("python", "python3", "python interpreter")
+	req := fs.String("requirements", "", "path to a hash-pinned requirements.txt (required)")
+	python := fs.String("python", "3.11", "python version, e.g. 3.11")
 	mount := fs.String("mount", "", "mount path inside container (default: /opt/layers/<name>)")
-	runtime := fs.String("runtime", "python-3", "runtime tag")
+	runtime := fs.String("runtime", "", "runtime tag (default: python-<version>)")
+	indexURL := fs.String("index-url", "", "override pip index URL (must be on builder allow-list)")
+	gateway := fs.String("gateway", "http://127.0.0.1:8081", "admin URL of the cfunc gateway")
+	tokenFile := fs.String("token-file", "", "file with the gateway admin token")
+	tokenLit := fs.String("token", "", "literal admin token (env preferred)")
 	fs.Parse(args)
 	if *name == "" || *version == "" || *req == "" {
 		fs.Usage()
 		os.Exit(2)
 	}
-	mountPath := *mount
-	if mountPath == "" {
-		mountPath = "/opt/layers/" + *name
+
+	body, err := os.ReadFile(*req)
+	if err != nil {
+		exit(fmt.Errorf("read requirements: %w", err))
 	}
-	tmp, err := os.MkdirTemp("", "cfunc-pip-")
+	token := *tokenLit
+	if token == "" {
+		if *tokenFile != "" {
+			b, err := os.ReadFile(*tokenFile)
+			if err != nil {
+				exit(fmt.Errorf("read token file: %w", err))
+			}
+			token = strings.TrimSpace(string(b))
+		} else {
+			token = strings.TrimSpace(os.Getenv("CFUNC_ADMIN_TOKEN"))
+		}
+	}
+
+	spec := map[string]any{
+		"name":       *name,
+		"version":    *version,
+		"runtime":    *runtime,
+		"mount_path": *mount,
+		"build": map[string]any{
+			"type":         "python-pip",
+			"python":       *python,
+			"requirements": string(body),
+			"index_url":    *indexURL,
+		},
+	}
+	specJSON, _ := json.Marshal(spec)
+
+	httpReq, _ := http.NewRequest("POST",
+		strings.TrimRight(*gateway, "/")+"/_/api/layers/build",
+		bytes.NewReader(specJSON))
+	httpReq.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+	}
+	cl := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := cl.Do(httpReq)
+	if err != nil {
+		exit(fmt.Errorf("call gateway: %w", err))
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		exit(fmt.Errorf("build failed (HTTP %d): %s", resp.StatusCode, respBody))
+	}
+
+	// Parse result, extract the tarball locally, store as a layer.
+	var result struct {
+		Manifest    map[string]any `json:"manifest"`
+		TarGzBase64 string         `json:"tar_gz_base64"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		exit(fmt.Errorf("parse builder response: %w", err))
+	}
+	tgz, err := base64.StdEncoding.DecodeString(result.TarGzBase64)
+	if err != nil {
+		exit(fmt.Errorf("decode tarball: %w", err))
+	}
+
+	tmp, err := os.MkdirTemp("", "cfunc-build-out-")
 	if err != nil {
 		exit(err)
 	}
 	defer os.RemoveAll(tmp)
-
-	pip := exec.Command(*python, "-m", "pip", "install",
-		"--target", tmp, "-r", *req,
-		"--no-compile", "--disable-pip-version-check", "--quiet")
-	pip.Stdout = os.Stdout
-	pip.Stderr = os.Stderr
-	if err := pip.Run(); err != nil {
-		exit(fmt.Errorf("pip install: %w", err))
+	if err := builderpkg.Extract(tgz, tmp); err != nil {
+		exit(fmt.Errorf("extract tarball: %w", err))
 	}
-	m, err := openLayers().Add(*name, *version, mountPath, *runtime, tmp)
+
+	mountPath := *mount
+	if mountPath == "" {
+		mountPath = "/opt/layers/" + *name
+	}
+	rt := *runtime
+	if rt == "" {
+		rt = "python-" + *python
+	}
+	m, err := openLayers().Add(*name, *version, mountPath, rt, tmp)
 	if err != nil {
 		exit(err)
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(m)
+	_ = enc.Encode(map[string]any{
+		"manifest":          m,
+		"builder_manifest":  result.Manifest,
+	})
 }
 
 func layerList() {

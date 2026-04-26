@@ -194,6 +194,55 @@ cfunc-scheduler -store=/var/lib/cfunc/cron.json -gateway=http://127.0.0.1:8080
 Storage: a JSON file. Persistent across restarts. Multi-host support
 (SQLite swap-in) is open work.
 
+## Layer builder (`cmd/builder`)
+
+Layers are built **server-side**, not on the operator's workstation.
+That closes the classic supply-chain vector (compromised dev machine
+produces compromised layer) and enforces hash-pinning.
+
+**Start the builder** (on a dedicated build host):
+
+```sh
+echo "long-random-secret" > /etc/cfunc/builder.token
+chmod 600 /etc/cfunc/builder.token
+cfunc-builder \
+  -addr=127.0.0.1:9090 \
+  -token-file=/etc/cfunc/builder.token \
+  -allow-python="3.11,3.12" \
+  -allow-index="https://pypi.org/simple"
+```
+
+**Wire the gateway to it:**
+
+```sh
+cfunc-gateway ... \
+  -builder-url=http://127.0.0.1:9090 \
+  -builder-token-file=/etc/cfunc/builder.token
+```
+
+**Build a layer via the CLI:**
+
+`requirements.txt` must be **fully hash-pinned**. Anything else is
+rejected with HTTP 400 before `pip` runs at all.
+
+```sh
+# requirements.txt:
+#   numpy==1.26.0 \
+#       --hash=sha256:abc...
+#   beautifulsoup4==4.14.3 \
+#       --hash=sha256:def...
+
+cfunc layer build-python \
+  --name pylib --version 1.0.0 \
+  --requirements ./requirements.txt \
+  --python 3.11 \
+  --gateway http://127.0.0.1:8081 \
+  --token-file /etc/cfunc/admin.token
+```
+
+Generate hash-pinned files with `pip-compile --generate-hashes` from
+the `pip-tools` package.
+
 ## Layer store
 
 Layers are **content-addressed directories** on the host, mounted

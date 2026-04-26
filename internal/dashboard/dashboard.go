@@ -23,6 +23,14 @@ type Admin interface {
 	UnregisterFunction(name string) bool
 }
 
+// LayerBuilder hooks the layer-build API. Optional; when nil the
+// /_/api/layers/build endpoint 404s. The byte slice returned is the
+// full builder response (manifest + tarball) — the dashboard relays
+// it untouched so the operator's CLI can verify and store it.
+type LayerBuilder interface {
+	BuildLayer(spec []byte) (response []byte, err error)
+}
+
 // RegisterRequest is the JSON body accepted by POST /_/api/functions.
 type RegisterRequest struct {
 	Name           string             `json:"name"`
@@ -45,6 +53,7 @@ type Handler struct {
 	prefix         string
 	stats          StatsProvider
 	admin          Admin // optional; nil = admin endpoints disabled
+	builder        LayerBuilder
 	logs           *LogCapture
 	allowedOrigins []string // nil/empty -> same-origin only
 
@@ -54,10 +63,11 @@ type Handler struct {
 
 // Config bundles dashboard options.
 type Config struct {
-	Prefix string // URL prefix, default "/_/"
-	Stats  StatsProvider
-	Admin  Admin // optional
-	Logs   *LogCapture
+	Prefix  string // URL prefix, default "/_/"
+	Stats   StatsProvider
+	Admin   Admin        // optional — runtime function management
+	Builder LayerBuilder // optional — server-side layer builds
+	Logs    *LogCapture
 	// AllowedOrigins, if non-empty, lists patterns the WebSocket Accept
 	// will compare the Origin header against (see coder/websocket
 	// AcceptOptions.OriginPatterns). Empty/nil means same-origin only.
@@ -89,6 +99,7 @@ func NewWithConfig(cfg Config) *Handler {
 		prefix:         prefix,
 		stats:          cfg.Stats,
 		admin:          cfg.Admin,
+		builder:        cfg.Builder,
 		logs:           cfg.Logs,
 		allowedOrigins: cfg.AllowedOrigins,
 		files:          sub,
@@ -112,6 +123,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveFunctions(w, r)
 	case strings.HasPrefix(rest, "api/functions/"):
 		h.serveFunction(w, r, strings.TrimPrefix(rest, "api/functions/"))
+	case rest == "api/layers/build":
+		h.serveLayerBuild(w, r)
 	default:
 		// Asset (e.g. /_/assets/index-XYZ.js). FileServer handles 404.
 		h.staticSrv.ServeHTTP(w, r)
