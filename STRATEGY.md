@@ -123,10 +123,10 @@ Isolation auf Container-Ebene.**
 | Release | Inhalt | Aufwand |
 |---|---|---|
 | **0.1** | Single-Node, 1 Tenant, voll funktional. Wire/Pool/Layers/Scheduler/Dashboard/TLS/Builder steht | ✅ |
-| **0.2 — Cluster-Ready** | `internal/state` mit Postgres-Backend + LISTEN/NOTIFY, Cron-Leader-Election via `pg_try_advisory_lock`, `cfunc cluster init/status`, Gateway `-state-dsn`. `internal/layerstore` mit S3-Backend (Hetzner Object Storage / RustFS / AWS) als isolierte, getestete Schicht. **Layer-Distribution-Verdrahtung folgt mit 0.3**, weil sie eine Erweiterung des Layer-Adressmodells (Digest in `LayerMount`) erfordert, die mit dem Multi-Tenancy-Refactor zusammen passt. | ✅ Code-Side |
-| **0.2.1** | Helm-Chart + docker-compose, Hetzner-Quickstart-Doku, layerstore-Verdrahtung wenn 0.3 sich verzögert | offen |
-| **0.3 — Multi-Tenancy** | Projekte, API-Keys, Quotas, Audit-Log, Per-Projekt-Routing | ~2 Wochen |
-| **0.4 — Sticky-Routing & Performance** | Eigener Router oder HAProxy-Recipe, Cold-Start-Optimierungen, Pre-Warming-API (`min_warm: N`) | ~2 Wochen |
+| **0.2 — Cluster-Ready** | `internal/state` mit Postgres-Backend + LISTEN/NOTIFY, Cron-Leader-Election via `pg_try_advisory_lock`, `cfunc cluster init/status`, Gateway `-state-dsn`. `internal/layerstore` mit S3-Backend (Hetzner Object Storage / RustFS / AWS) als isolierte, getestete Schicht. | ✅ |
+| **0.2.1** | Multi-stage Dockerfile, docker-compose-Stack (2 Gateways + Postgres + RustFS + Builder), Helm-Chart in `deploy/helm/cfunc/`, Hetzner-Quickstart-Doku | ✅ |
+| **0.3 — Multi-Tenancy** | Projekte als Tenant-Einheit, API-Keys mit Scopes (`admin`/`deploy`/`invoke`), Per-Projekt-Quotas mit Token-Bucket + Postgres-Aggregat-Sync, Append-Only-Audit-Log, URL-Path-Routing (`/v1/<project>/fn/<name>`) mit Compat-Pfad. Digest in `LayerMount` + `StoreResolver` der Layer aus S3-Backend pullt und tar-slip-gehärtet entpackt. CLI: `cfunc project|key|quota|audit`. | ✅ |
+| **0.4 — Sticky-Routing & Performance** | Eigener Router oder HAProxy-Recipe, Cold-Start-Optimierungen, Pre-Warming-API (`min_warm: N`), Builder-seitiger Push in Layerstore (push-on-build statt nur pull-on-reference) | ~2 Wochen |
 | **0.5 — Lambda-Parity-Trigger** | API-Gateway-Routes (Path/Method/Headers), Queue-Trigger via NATS oder Postgres, S3-Event-Trigger (RustFS/MinIO-kompatibel) | ~3 Wochen |
 | **0.6 — Operator-Suite** | Terraform-Modul für Hetzner, Ansible-Playbook, Prometheus-Exporter, Grafana-Dashboards, Backup-Tooling | ~2 Wochen |
 | **0.7 — Sicherheits-Hardening** | Layer-Signaturen-Pflicht (cosign), Policy-Engine (OPA-light), Network-Policies, User-Namespace-Isolation pro Function | ~2 Wochen |
@@ -135,31 +135,26 @@ Isolation auf Container-Ebene.**
 **Gesamtweg: ~4–5 Monate konzentrierter Arbeit für 1.0**, jedes Release
 für sich einsetzbar.
 
-## 6. Konkrete nächste Schritte (Release 0.2)
+## 6. Konkrete nächste Schritte (Release 0.4)
 
-Drei Stücke, die zusammen den Sprung von Single- auf Multi-Node machen:
+Mit 0.3 ausgeliefert sind: Multi-Tenancy-Datenmodell, Auth, Routing,
+Quotas, Audit, content-addressed Layer-Pull. Was 0.4 anfasst:
 
-### Stück A: `internal/state` mit Postgres-Backend (~5 Tage)
-- Schema, Migrations, CRUD für Functions/Crons
-- `LISTEN/NOTIFY`-Loop im Gateway
-- Postgres-Advisory-Lock im Scheduler
-- Bestehender JSON-Cron-Store wird Backup-Pfad für Single-Node-Mode (kein-Postgres-Config)
-- Tests: zwei Replicas in Test-Postgres, Function-Add via Replica1 sichtbar in Replica2 binnen 1 s
+### Stück A: Sticky-Routing
+- Function-Name → Backend-Hash an Load-Balancer (HAProxy-Recipe oder eigener TCP-Router)
+- Reduziert Cold-Starts, weil wiederholte Calls auf denselben Gateway treffen und dort den warmen Pool finden
+- Warm-Pool-Effekt war bisher ungenutzt im Cluster, weil LB round-robin verteilt
 
-### Stück B: OCI-Registry-Backend für Layers (~4 Tage)
-- Builder pusht in eine Registry (config: `OCI_REGISTRY=…`)
-- Gateway hat einen `internal/oci-pull`-Cache: erste Reference fetched, lokaler Disk-Cache mit LRU
-- Manifest enthält `registry_url` + `digest`; Pull validiert digest beim Erhalten
-- cosign-Signature-Check als optionaler Gate
-- Tests: Builder→Registry→Gateway-Pull-Roundtrip mit zot als Registry
+### Stück B: Pre-Warming-API
+- `min_warm: N` als Function-Konfig
+- Gateway hält N Instanzen permanent warm
+- MaxConcurrency-Pool teilt sich in `min_warm` (resident) + `max_burst` (transient)
 
-### Stück C: `cmd/cfunc-cluster` Operator-CLI (~2 Tage)
-- `cfunc cluster init <postgres-dsn>` — Schema-Migration
-- `cfunc cluster status` — alle Replicas, ihre Health, ihre Pools
-- `cfunc cluster register-replica --addr=…` — Replica registriert sich (für Sticky-Routing v2)
-- Doku: Hetzner-Quickstart mit 3 Cloud-Servern + Postgres + zot
-
-**Gesamt: ~11 Tage für 0.2 Cluster-Ready.**
+### Stück C: Builder-Push in Layerstore
+- Heute: 0.3 hat den Pull-Pfad gewired (Gateway → S3 bei erster Reference)
+- 0.4 schließt den Kreis: Builder pusht eine fertig-gebaute Schicht direkt nach Build in S3
+- Manifest aktualisiert den Digest im LayerMount
+- cosign-Signaturen optional (volle Pflicht in 0.7)
 
 ## 7. Offene Designentscheidungen
 
@@ -167,10 +162,10 @@ Hier sammeln wir Fragen, die wir **bewusst noch nicht** beantwortet haben.
 Wenn die Antwort gefunden ist, wandert der Eintrag in die Architektur-
 Sektion.
 
-### 7.1 Multi-Tenancy-Routing-Modell
-- **Sub-Domain pro Tenant** (`acme.cfunc.example.org/fn/search`): schöner für Operator, braucht Wildcard-DNS + Cert-Chain mit DNS-01
-- **URL-Path** (`cfunc.example.org/v1/acme/fn/search`): einfacher Setup, weniger schön
-- **Tendenz:** URL-Path als Standard, Sub-Domain als optionaler Setup-Modus
+### 7.1 Multi-Tenancy-Routing-Modell — **entschieden in 0.3: URL-Path**
+- Implementiert: `/v1/<project>/fn/<name>` — `parseFunctionPath` erkennt beide Formen.
+- `/fn/<name>` bleibt als Compat-Pfad für Single-Tenant-Deployments (Project = `default`).
+- Sub-Domain-Routing bleibt für später optional; bisher kein Operator-Bedarf gemeldet.
 
 ### 7.2 Container-Isolation auf Multi-Tenant-Level
 - Heute: alle Functions im selben runc-Bundle-Schema, Standard-Capability-Set

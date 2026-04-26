@@ -9,10 +9,12 @@
 cfunc is a self-hosted FaaS runner. A request flows:
 
 ```
-Client ─► Public port :8080  /fn/<name>
+Client ─► Public port :8080
+              /v1/<project>/fn/<name>   (multi-tenant)
+              /fn/<name>                (legacy / default project)
               │
               ▼
-         Gateway
+         Gateway   project-check + quota-check before acquire
               │  spawns function instance on demand
               ▼
         Function process (subprocess or OCI container)
@@ -23,13 +25,17 @@ Client ─► Public port :8080  /fn/<name>
 
 **Two listeners:**
 
-| Port  | Default            | Content                                          |
-|-------|--------------------|--------------------------------------------------|
-| Public  | `:8080`           | `/fn/<name>` (function calls), `/healthz`        |
-| Admin   | `127.0.0.1:8081`  | `/_/` dashboard, `/_/api/*` admin API, `/_/ws`   |
+| Port  | Default            | Content                                                  |
+|-------|--------------------|----------------------------------------------------------|
+| Public  | `:8080`           | `/v1/<project>/fn/<name>`, `/fn/<name>` (compat), `/healthz` |
+| Admin   | `127.0.0.1:8081`  | `/_/` dashboard, `/_/api/*` admin API, `/_/ws`           |
 
 The admin port binds to **loopback by default**. Exposing it externally
 without a token will refuse to start.
+
+For **multi-replica cluster mode** (Postgres-backed state, leader-elected
+cron, S3-compatible layer distribution), see the
+[Hetzner quickstart](./hetzner.md) and the [Helm chart](../../deploy/helm/cfunc/).
 
 ## Components
 
@@ -270,6 +276,113 @@ A function references a layer at register time:
 
 The dashboard's Layers panel shows reference counts per layer and the
 effective dedup ratio.
+
+### Layer distribution (S3-compatible)
+
+For multi-host clusters, configure an S3-compatible backend so each
+gateway can pull missing layers by their `sha256:` digest. Supported:
+Hetzner Object Storage, RustFS (the actively-maintained MinIO drop-in,
+Apache 2.0), AWS S3.
+
+The gateway accepts a layer record with a `digest` field; on first
+reference it pulls the gzipped tar from the configured backend, verifies
+the content hash, and extracts under a host cache directory before
+mounting the function container. Tar extraction is hardened against
+path-traversal and symlink-slip attacks.
+
+`internal/layerstore` holds the client; the gateway wires it up via
+`Options.LayerResolver`. Builder-side push is the 0.4 deliverable —
+0.3 ships the pull-on-first-reference path and the `Digest` field on
+`LayerMount`.
+
+## Multi-tenancy
+
+cfunc 0.3+ scopes all resources by **project**. Functions, cron jobs,
+API keys, quotas, and audit entries belong to exactly one project.
+The `default` project is auto-created at migration time and is what
+the legacy `/fn/<name>` route addresses; new projects use the
+`/v1/<project>/fn/<name>` form.
+
+### Bootstrap
+
+Given a Postgres DSN:
+
+```sh
+DSN="postgres://cfunc:…@db/cfunc?sslmode=require"
+
+cfunc cluster init --dsn "$DSN"
+
+# Create a project
+cfunc project create --dsn "$DSN" --name acme --description "ACME team"
+cfunc project list   --dsn "$DSN"
+```
+
+### API keys
+
+Keys carry a comma-separated set of scopes:
+
+| Scope   | Meaning                                                           |
+|---------|-------------------------------------------------------------------|
+| `admin` | Manage the project (create/revoke keys, set quotas) — implies the others |
+| `deploy`| Register or unregister functions / cron jobs in this project       |
+| `invoke`| Call functions of this project at the public route                |
+
+```sh
+cfunc key create --dsn "$DSN" --project acme --scopes deploy,invoke
+# id:    ck_…
+# token: ck_….<plaintext>          ← shown ONCE — store it now
+# (plaintext token shown once — store it now)
+
+cfunc key list   --dsn "$DSN" --project acme
+cfunc key revoke --dsn "$DSN" --id ck_…
+```
+
+The token is only ever stored as `sha256(plaintext)`. Lookup is
+constant-time at the bearer-comparison layer; the index hit on the
+hash is negligibly data-dependent.
+
+A key with `project = "*"` is **rejected at creation** — that value is
+the in-memory sentinel for cluster-admin identity (the legacy single
+admin token), not a tenant scope.
+
+### Quotas
+
+Per-project, per-kind limits. Currently enforced: `requests_per_min`.
+
+```sh
+cfunc quota set  --dsn "$DSN" --project acme --kind requests_per_min --value 1000
+cfunc quota list --dsn "$DSN" --project acme
+```
+
+A value of `0` means unlimited (the default for unset projects).
+
+Enforcement is **approximately cluster-wide**: every gateway maintains
+an in-memory token bucket and flushes its delta into Postgres every
+~10 seconds, then refreshes the cluster aggregate. Under heavy parallel
+load each gateway can independently overshoot by up to one bucket-window
+worth of requests before the next sync. The trade-off buys a per-request
+hot path with no DB hit. Strict-cap enforcement is not on the 1.0
+roadmap; if you need hard limits, set the value below the soft target.
+
+### Audit log
+
+Every state-changing CLI / admin-API call appends a row to
+`cfunc_audit_log`:
+
+```sh
+cfunc audit tail --dsn "$DSN" --project acme           # project events
+cfunc audit tail --dsn "$DSN"                          # cluster-level events
+cfunc audit tail --dsn "$DSN" --project acme --limit 200
+```
+
+Recorded actions: `function.put`, `function.delete`, `project.create`,
+`project.delete`, `key.create`, `key.revoke`, `quota.set`. Entries
+include `actor` (`admin-token`, the `ck_…` key id, or `cli`), `target`,
+and a JSONB `metadata` blob.
+
+The `cfunc_audit_log` table is append-only and never truncated by
+cfunc itself. Operators who need retention limits should add a
+periodic `DELETE … WHERE ts < now() - interval '90 days'` cron.
 
 ## Container mode (Linux + runc)
 

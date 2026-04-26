@@ -9,10 +9,12 @@
 cfunc ist ein selbstgehosteter FaaS-Runner. Eine Anfrage durchläuft:
 
 ```
-Client ─► Public-Port :8080  /fn/<name>
+Client ─► Public-Port :8080
+              /v1/<projekt>/fn/<name>   (multi-tenant, ab 0.3)
+              /fn/<name>                (Legacy / default-Projekt)
               │
               ▼
-         Gateway
+         Gateway   Project-Check + Quota-Check vor Acquire
               │  spawnt Function-Instance on demand
               ▼
         Function-Prozess (Subprocess oder OCI-Container)
@@ -23,14 +25,54 @@ Client ─► Public-Port :8080  /fn/<name>
 
 **Zwei Listener:**
 
-| Port  | Default            | Inhalt                                           |
-|-------|--------------------|--------------------------------------------------|
-| Public  | `:8080`           | `/fn/<name>` (Function-Aufrufe), `/healthz`      |
-| Admin   | `127.0.0.1:8081`  | `/_/` Dashboard, `/_/api/*` Admin-API, `/_/ws`   |
+| Port  | Default            | Inhalt                                                       |
+|-------|--------------------|--------------------------------------------------------------|
+| Public  | `:8080`           | `/v1/<projekt>/fn/<name>`, `/fn/<name>` (Compat), `/healthz` |
+| Admin   | `127.0.0.1:8081`  | `/_/` Dashboard, `/_/api/*` Admin-API, `/_/ws`               |
 
 Der Admin-Port bindet **per Default nur auf Loopback**. Wer ihn öffentlich
 machen will, muss ein Token konfigurieren — andernfalls verweigert das
 Gateway den Start.
+
+Für **Multi-Replica-Cluster-Mode** (Postgres-State, Leader-Election für
+Cron, S3-kompatible Layer-Distribution): siehe den
+[Hetzner-Quickstart](../en/hetzner.md) und das
+[Helm-Chart](../../deploy/helm/cfunc/) (englisch).
+
+## Multi-Tenancy (ab 0.3)
+
+cfunc skopiert ab 0.3 alle Ressourcen über **Projekte**. Functions,
+Cron-Jobs, API-Keys, Quotas und Audit-Einträge gehören zu genau einem
+Projekt. Das `default`-Projekt entsteht automatisch bei der Migration
+und ist das, was die Legacy-Route `/fn/<name>` adressiert; neue
+Projekte nutzen die `/v1/<projekt>/fn/<name>`-Form.
+
+```sh
+DSN="postgres://cfunc:…@db/cfunc?sslmode=require"
+
+cfunc cluster init --dsn "$DSN"
+cfunc project create --dsn "$DSN" --name acme --description "ACME-Team"
+cfunc key create     --dsn "$DSN" --project acme --scopes deploy,invoke
+# → druckt id + Plaintext-Token (einmalig sichtbar)
+cfunc quota set      --dsn "$DSN" --project acme --kind requests_per_min --value 1000
+cfunc audit tail     --dsn "$DSN" --project acme
+```
+
+API-Key-Scopes: `admin` (alles), `deploy` (Functions/Crons im Projekt
+schreiben), `invoke` (öffentlich aufrufen). Token werden ausschließlich
+als `sha256(plaintext)` gespeichert.
+
+Quota-Enforcement ist **näherungsweise cluster-weit**: jeder Gateway
+hält einen In-Memory-Token-Bucket, flusht den Delta alle ~10 s nach
+Postgres und holt sich die Cluster-Summe zurück. Unter Last kann jeder
+Gateway-Knoten kurzzeitig um ein Bucket-Fenster über das Limit
+schießen — bewusste Trade-off für eine DB-freie Hot-Path. Strict-Cap
+ist nicht für 1.0 geplant; wer harte Limits braucht, setzt den Wert
+unter das eigentliche Ziel.
+
+Die englischen Pendants in [`docs/en/operations.md`](../en/operations.md)
+sind führend; weitere Detail-Tabellen (Audit-Action-Liste,
+Layer-Distribution-Architektur) stehen dort.
 
 ## Komponenten
 

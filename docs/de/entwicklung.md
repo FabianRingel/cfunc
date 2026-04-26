@@ -212,6 +212,27 @@ curl -X POST http://localhost:8081/_/api/functions \
 Re-Register desselben Namens ersetzt die Definition und schließt den
 laufenden Pool graceful.
 
+### Multi-Tenant-Deployments (ab 0.3)
+
+Im Cluster-Mode gehört jede Function zu einem **Projekt**. Beim
+Registrieren wird das Projekt mitgegeben; ohne Angabe ist es `default`:
+
+```json
+{
+  "name": "my-fn",
+  "binary": "/abs/path/handler",
+  "project": "acme"
+}
+```
+
+Aufruf dann unter `/v1/acme/fn/my-fn`. Die Legacy-URL `/fn/my-fn`
+funktioniert weiterhin, aber nur für `default` — Cross-Projekt-Aufrufe
+werden auf Routing-Ebene mit 404 abgewiesen.
+
+API-Key-Bearer brauchen Scope `deploy` zum Registrieren und `invoke`
+zum Aufrufen. Vollständige Key-/Quota-/Audit-Story:
+[`betrieb.md`](./betrieb.md).
+
 ## Concurrency und Recursion
 
 Pro Function gibt es einen **Instance-Pool**. `max_concurrency` legt die

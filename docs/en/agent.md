@@ -17,16 +17,19 @@ idle reap.
 
 ## 2. Endpoints
 
-| Method  | URL                              | Purpose                              |
-|---------|----------------------------------|--------------------------------------|
-| GET     | `:8080/fn/<name>`                | Invoke function (public)             |
-| POST    | `:8080/fn/<name>`                | same                                 |
-| POST    | `:8081/_/api/functions`          | Register / replace function          |
-| DELETE  | `:8081/_/api/functions/<name>`   | Remove function                      |
-| GET     | `:8081/_/api/state`              | Status snapshot                      |
+| Method  | URL                                       | Purpose                            |
+|---------|-------------------------------------------|------------------------------------|
+| GET/POST| `:8080/v1/<project>/fn/<name>`            | Invoke (multi-tenant, since 0.3)   |
+| GET/POST| `:8080/fn/<name>`                         | Invoke (legacy = default project)  |
+| POST    | `:8081/_/api/functions`                   | Register / replace function        |
+| DELETE  | `:8081/_/api/functions/<name>`            | Remove function                    |
+| GET     | `:8081/_/api/state`                       | Status snapshot                    |
 
 The admin port (8081) binds to `127.0.0.1` by default. When exposed, a
 token is required (`Authorization: Bearer <token>` or `?token=<token>`).
+In cluster mode, project-scoped API keys (created via
+`cfunc key create`) replace the single admin token for tenant
+operations; the legacy admin token still works as cluster admin.
 
 ## 3. Function contract
 

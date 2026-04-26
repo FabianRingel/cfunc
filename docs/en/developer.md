@@ -211,6 +211,27 @@ curl -X POST http://localhost:8081/_/api/functions \
 Re-registering the same name replaces the definition and gracefully
 closes the running pool.
 
+### Multi-tenant deployments
+
+In cluster mode, every function belongs to a **project**. Pass the
+project at register time; if omitted, it's set to `default`:
+
+```json
+{
+  "name": "my-fn",
+  "binary": "/abs/path/handler",
+  "project": "acme"
+}
+```
+
+Invoke at the project-scoped route: `/v1/acme/fn/my-fn`. The legacy
+`/fn/my-fn` URL still works for the `default` project but is rejected
+for any other project.
+
+API-key bearers must hold the `deploy` scope to register and `invoke`
+to call. See [`operations.md`](./operations.md) for the full key /
+quota / audit story.
+
 ## Concurrency and recursion
 
 Each function has an **instance pool**. `max_concurrency` caps its size

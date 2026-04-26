@@ -9,11 +9,13 @@ in Go, Python, or Node, isolated in OCI containers, and scaled to zero
 between calls. Page-cache-shared dependency layers make multi-function
 deployments memory-efficient without orchestrator overhead.
 
-> **Status:** 0.2 — cluster-ready code landed. Multi-replica gateways
-> share state via Postgres (`LISTEN/NOTIFY`), cron has leader election
-> via `pg_try_advisory_lock`, and `internal/layerstore` provides an
-> S3-compatible layer-distribution backend. Helm chart and
-> docker-compose ship with 0.2.1. See [`STRATEGY.md`](./STRATEGY.md)
+> **Status:** 0.3 — multi-tenancy landed. Per-project routing
+> (`/v1/<project>/fn/<name>`), API keys with scopes (`admin`,
+> `deploy`, `invoke`), per-project request quotas with cluster-wide
+> aggregate sync, append-only audit log, and content-addressed layer
+> distribution wired into the gateway via `internal/layerstore`.
+> 0.2 cluster-mode, 0.2.1 operator tooling (Helm, docker-compose,
+> Hetzner quickstart) all included. See [`STRATEGY.md`](./STRATEGY.md)
 > for the roadmap.
 
 ```sh
@@ -61,8 +63,9 @@ about is "three Hetzner servers and Postgres".
 | **ACME / Let's Encrypt** | Built-in via `certmagic`. HTTP-01 and DNS-01, with libdns providers for Cloudflare, Hetzner, Route53, DigitalOcean, RFC2136. |
 | **Cron** | In-process scheduler with Postgres-backed leader election (`pg_try_advisory_lock`); JSON-persisted in single-node mode. |
 | **Cluster mode** | Multi-replica gateways share state via Postgres `LISTEN/NOTIFY`. `cfunc cluster init/status` for setup. Single-node deployments stay zero-config. |
-| **Layer distribution** | `internal/layerstore` with S3-compatible backend (Hetzner Object Storage, RustFS, AWS S3); `Noop` default for single-node. |
-| **Hardened by default** | Token-auth on admin port, loopback default, body-size caps, SSRF block on the scraper template, sanitized subprocess env (admin token never leaks to functions), function-name allow-list, request timeouts. |
+| **Layer distribution** | `internal/layerstore` with S3-compatible backend (Hetzner Object Storage, RustFS, AWS S3); content-addressed (`sha256:…`), tar-slip-hardened extraction. `Noop` default for single-node. |
+| **Multi-tenancy** | Projects, API keys with scopes (`admin`, `deploy`, `invoke`), per-project request quotas with approximate cluster-wide enforcement, append-only audit log. URL-path routing (`/v1/<project>/fn/<name>`); legacy `/fn/<name>` kept as compat for the `default` project. |
+| **Hardened by default** | Token-auth on admin port, loopback default, body-size caps, SSRF block on the scraper template, sanitized subprocess env (admin token never leaks to functions), function-name allow-list, request timeouts, cross-project invocation rejected at the routing layer. |
 
 Sustained throughput on a single M-series macOS dev box: **~18 500
 req/s, 0 errors**, with the gateway at ~1.5 cores. Cold-starts under
@@ -73,24 +76,26 @@ req/s, 0 errors**, with the gateway at ~1.5 cores. Cold-starts under
 ```
               public                                 admin (loopback or token)
               :8080                                  :8081
-              /fn/<name>                             /_/   dashboard
-                │                                    /_/api/* admin API
-                ▼                                    /_/ws    live metrics
-        ┌───────────────────┐                              │
-        │ cfunc-gateway     │◄──── Postgres (cluster state)│
-        │  - HTTP frontend  │                              │
+              /v1/<proj>/fn/<name>                   /_/   dashboard
+              /fn/<name>  (compat)                   /_/api/* admin API
+                │                                    /_/ws    live metrics
+                ▼                                          │
+        ┌───────────────────┐    Postgres (cluster state, │
+        │ cfunc-gateway     │◄── projects, keys, quotas,  │
+        │  - HTTP frontend  │    audit log)               │
         │  - per-fn pools   │                              │
-        │  - layer mounts   │       ┌──────────────────┐   │
-        └─────────┬─────────┘       │  cfunc-builder   │◄──┘
-                  │                 │  pip --require-  │
-        OCI bundle│ via runc        │  hashes sandbox  │
-                  ▼                 └──────────────────┘
-        ┌───────────────────┐
-        │ Function process  │  Go binary, Python script,
-        │  + cfunc SDK      │  or Node ESM module — same
-        │  ↕ Unix socket    │  length-prefixed JSON wire
-        │  (length-prefix   │  protocol regardless of language.
-        │   JSON frames)    │
+        │  - layer resolver │    ┌──────────────────┐      │
+        │  - quota limiter  │◄── │  cfunc-builder   │◄─────┘
+        └─────────┬─────────┘    │  pip --require-  │
+                  │              │  hashes sandbox  │
+        OCI bundle│ via runc     └──────────────────┘
+                  ▼              S3-compatible (Hetzner Object Storage,
+        ┌───────────────────┐    RustFS, AWS) ◄── content-addressed
+        │ Function process  │    layer distribution by sha256 digest
+        │  + cfunc SDK      │  Go binary, Python script,
+        │  ↕ Unix socket    │  or Node ESM module — same
+        │  (length-prefix   │  length-prefixed JSON wire
+        │   JSON frames)    │  protocol regardless of language.
         └───────────────────┘
 ```
 
@@ -148,6 +153,24 @@ curl http://127.0.0.1:8080/fn/hello
 ```
 
 Open `http://127.0.0.1:8081/_/` for the dashboard.
+
+### Multi-tenant operations
+
+Cluster mode exposes per-project routing, API keys with scopes,
+and quotas. A typical bootstrap, given a Postgres DSN:
+
+```sh
+cfunc cluster init  --dsn "$DSN"
+cfunc project create --dsn "$DSN" --name acme --description "ACME team"
+cfunc key create     --dsn "$DSN" --project acme --scopes deploy,invoke
+# → prints id + plaintext token (shown once)
+cfunc quota set      --dsn "$DSN" --project acme --kind requests_per_min --value 1000
+cfunc audit tail     --dsn "$DSN" --project acme
+```
+
+Functions are then invoked at `/v1/acme/fn/<name>`; the legacy
+`/fn/<name>` form continues to work and is treated as the
+`default` project.
 
 ### Linux container mode (production-like)
 
@@ -270,9 +293,9 @@ Kubernetes operations team.
 |---|---|---|
 | **0.1** | Single-node, single-tenant, all SDKs, dashboard, TLS, builder | ✅ shipped |
 | **0.2** | Cluster mode: Postgres state with `LISTEN/NOTIFY`, leader-elected cron, S3-compatible layerstore package | ✅ shipped |
-| 0.2.1 | Helm chart, docker-compose stack, Hetzner quickstart docs, layerstore wired into builder/gateway | next |
-| 0.3 | Multi-tenancy: projects, API keys with scopes, quotas, audit log | planned |
-| 0.4 | Sticky routing, cold-start optimisation, pre-warming | planned |
+| **0.2.1** | Helm chart, docker-compose stack, Hetzner quickstart docs | ✅ shipped |
+| **0.3** | Multi-tenancy: projects, API keys with scopes, per-project quotas, audit log, layer-digest distribution wired into gateway | ✅ shipped |
+| 0.4 | Sticky routing, cold-start optimisation, pre-warming, builder push to layerstore | next |
 | 0.5 | Lambda-parity triggers: API-gateway routes, queue triggers, S3-event triggers | planned |
 | 0.6 | Operator suite: Terraform module for Hetzner, Helm chart, Prometheus exporter | planned |
 | 0.7 | Hardening: layer signatures (cosign), policy engine, user-namespace per function | planned |
