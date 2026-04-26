@@ -41,6 +41,19 @@ Usage:
   cfunc cluster init   --dsn postgres://user:pw@host/db   (run schema migrations)
   cfunc cluster status --dsn postgres://user:pw@host/db   (list functions + cron jobs)
 
+  cfunc project create  --dsn DSN --name N [--description D]
+  cfunc project list    --dsn DSN
+  cfunc project delete  --dsn DSN --name N
+
+  cfunc key create      --dsn DSN --project P [--description D] [--scopes deploy,invoke]
+  cfunc key list        --dsn DSN --project P
+  cfunc key revoke      --dsn DSN --id ID
+
+  cfunc quota set       --dsn DSN --project P --kind K --value V
+  cfunc quota list      --dsn DSN --project P
+
+  cfunc audit tail      --dsn DSN [--project P] [--limit 50]
+
 Environment:
   CFUNC_STORE   cfunc state root (default: /var/lib/cfunc)
                 Layers under <root>/layers, cron under <root>/cron.json
@@ -58,6 +71,14 @@ func main() {
 		cronCmd(os.Args[2:])
 	case "cluster":
 		clusterCmd(os.Args[2:])
+	case "project":
+		projectCmd(os.Args[2:])
+	case "key":
+		keyCmd(os.Args[2:])
+	case "quota":
+		quotaCmd(os.Args[2:])
+	case "audit":
+		auditCmd(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:

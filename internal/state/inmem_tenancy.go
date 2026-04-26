@@ -215,7 +215,14 @@ func (s *InMemStore) ListAudit(_ context.Context, project string, since time.Tim
 		}
 		out = append(out, e)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].TS.After(out[j].TS) })
+	// Newest first; break ties on ID (higher = newer) so tests that
+	// append in rapid succession get a deterministic order.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].TS.Equal(out[j].TS) {
+			return out[i].TS.After(out[j].TS)
+		}
+		return out[i].ID > out[j].ID
+	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}

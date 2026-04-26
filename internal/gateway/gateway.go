@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fabianringel/cfunc/internal/quota"
 	"github.com/fabianringel/cfunc/internal/spawn"
 	"github.com/fabianringel/cfunc/internal/state"
 	"github.com/fabianringel/cfunc/internal/wire"
@@ -64,6 +66,30 @@ const DefaultMaxConcurrency = 4
 // and JSON envelope overhead.
 const MaxRequestBody = 8 * 1024 * 1024
 
+// parseFunctionPath accepts both routing forms:
+//
+//   - /fn/<name>                       (legacy, project verification skipped)
+//   - /v1/<project>/fn/<name>          (multi-tenant, since 0.3)
+//
+// Returns (project, name, ok). For the legacy form project is "".
+func parseFunctionPath(p string) (string, string, bool) {
+	if strings.HasPrefix(p, "/fn/") {
+		return "", strings.TrimPrefix(p, "/fn/"), true
+	}
+	if strings.HasPrefix(p, "/v1/") {
+		rest := strings.TrimPrefix(p, "/v1/")
+		project, after, ok := strings.Cut(rest, "/")
+		if !ok {
+			return "", "", false
+		}
+		if !strings.HasPrefix(after, "fn/") {
+			return "", "", false
+		}
+		return project, strings.TrimPrefix(after, "fn/"), true
+	}
+	return "", "", false
+}
+
 // FunctionDef is what callers register with the gateway.
 type FunctionDef struct {
 	Name           string
@@ -71,14 +97,22 @@ type FunctionDef struct {
 	Env            []string
 	Layers         []LayerMount
 	MaxConcurrency int // 0 -> DefaultMaxConcurrency
+
+	// Project is the tenant scope. Empty == "default" (set on register).
+	// Used by /v1/<project>/fn/<name> routing to verify the URL matches.
+	Project string
 }
 
 // LayerMount pairs a resolved host directory with the path it should
 // appear at inside the container.
+//
+// Digest, if non-empty, is the content-addressed identifier used to
+// pull the layer from the configured layerstore on first reference.
 type LayerMount struct {
 	Name      string
 	HostPath  string
 	MountPath string
+	Digest    string
 }
 
 // Spawner starts a function instance for a given FunctionDef.
@@ -100,6 +134,14 @@ type Options struct {
 	// cron jobs. nil → an in-process state.NewInMemStore() is used,
 	// matching the pre-cluster behaviour.
 	Store state.Store
+
+	// Limiter enforces per-project request-rate quotas. nil disables
+	// quota checks (single-tenant deployments don't need them).
+	Limiter *quota.Limiter
+
+	// LayerResolver materialises layers on the local host before spawn.
+	// nil → NopResolver (HostPath must already exist on disk).
+	LayerResolver LayerResolver
 }
 
 type Gateway struct {
@@ -194,6 +236,9 @@ func NewWithOptions(opts Options) *Gateway {
 	}
 	if opts.Store == nil {
 		opts.Store = state.NewInMemStore()
+	}
+	if opts.LayerResolver == nil {
+		opts.LayerResolver = NopResolver{}
 	}
 	g := &Gateway{
 		opts:       opts,
@@ -304,10 +349,11 @@ func fromStateDef(d state.FunctionDef) FunctionDef {
 		Binary:         d.Binary,
 		Env:            append([]string(nil), d.Env...),
 		MaxConcurrency: d.MaxConcurrency,
+		Project:        d.Project,
 	}
 	for _, l := range d.Layers {
 		out.Layers = append(out.Layers, LayerMount{
-			Name: l.Name, HostPath: l.HostPath, MountPath: l.MountPath,
+			Name: l.Name, HostPath: l.HostPath, MountPath: l.MountPath, Digest: l.Digest,
 		})
 	}
 	return out
@@ -319,10 +365,11 @@ func toStateDef(d FunctionDef) state.FunctionDef {
 		Binary:         d.Binary,
 		Env:            append([]string(nil), d.Env...),
 		MaxConcurrency: d.MaxConcurrency,
+		Project:        d.Project,
 	}
 	for _, l := range d.Layers {
 		out.Layers = append(out.Layers, state.LayerMount{
-			Name: l.Name, HostPath: l.HostPath, MountPath: l.MountPath,
+			Name: l.Name, HostPath: l.HostPath, MountPath: l.MountPath, Digest: l.Digest,
 		})
 	}
 	return out
@@ -342,19 +389,31 @@ func (g *Gateway) Register(name, binary string) {
 // other replica's writes — there's exactly one code path that mutates
 // gateway state, no matter who initiated the change.
 func (g *Gateway) RegisterDef(def FunctionDef) error {
+	return g.RegisterDefAs(context.Background(), def, "system")
+}
+
+// RegisterDefAs is like RegisterDef but records the actor in the audit
+// log. ctx is used for the store and audit writes.
+func (g *Gateway) RegisterDefAs(ctx context.Context, def FunctionDef, actor string) error {
 	if !IsValidFunctionName(def.Name) {
 		return ErrInvalidName
 	}
 	if def.MaxConcurrency <= 0 {
 		def.MaxConcurrency = DefaultMaxConcurrency
 	}
-	if err := g.store.PutFunction(context.Background(), toStateDef(def)); err != nil {
+	if def.Project == "" {
+		def.Project = "default"
+	}
+	if err := g.store.PutFunction(ctx, toStateDef(def)); err != nil {
 		return err
 	}
-	// Apply locally too so behaviour is synchronous from the caller's
-	// perspective (HTTP register → next HTTP call sees it). Watch will
-	// also fire and applyPut is idempotent.
 	g.applyPut(def)
+	_ = g.store.AppendAudit(ctx, state.AuditEntry{
+		Project: def.Project,
+		Actor:   actor,
+		Action:  "function.put",
+		Target:  def.Name,
+	})
 	return nil
 }
 
@@ -362,11 +421,28 @@ func (g *Gateway) RegisterDef(def FunctionDef) error {
 // function existed at delete time. Local cache update is synchronous;
 // peer replicas pick it up via Watch.
 func (g *Gateway) Unregister(name string) bool {
+	return g.UnregisterAs(context.Background(), name, "system")
+}
+
+// UnregisterAs is like Unregister but records the actor in the audit log.
+func (g *Gateway) UnregisterAs(ctx context.Context, name, actor string) bool {
 	g.mu.Lock()
-	_, hadDef := g.functions[name]
+	def, hadDef := g.functions[name]
 	g.mu.Unlock()
-	_ = g.store.DeleteFunction(context.Background(), name)
+	_ = g.store.DeleteFunction(ctx, name)
 	g.applyDelete(name)
+	if hadDef {
+		project := def.Project
+		if project == "" {
+			project = "default"
+		}
+		_ = g.store.AppendAudit(ctx, state.AuditEntry{
+			Project: project,
+			Actor:   actor,
+			Action:  "function.delete",
+			Target:  name,
+		})
+	}
 	return hadDef
 }
 
@@ -388,12 +464,32 @@ func (g *Gateway) Close() {
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimPrefix(r.URL.Path, "/fn/")
-	// Strict allow-list: rejects path-traversal, newlines, ANSI escapes,
-	// and anything else that could corrupt logs or break routing.
-	if !IsValidFunctionName(name) {
+	project, name, ok := parseFunctionPath(r.URL.Path)
+	if !ok || !IsValidFunctionName(name) {
 		http.NotFound(w, r)
 		return
+	}
+
+	// Resolve the function so we can both verify the URL project matches
+	// and identify the owning project for quota enforcement on the
+	// compat path.
+	g.mu.Lock()
+	def, found := g.functions[name]
+	g.mu.Unlock()
+	registeredProject := "default"
+	if found && def.Project != "" {
+		registeredProject = def.Project
+	}
+	if project != "" && project != registeredProject {
+		http.NotFound(w, r)
+		return
+	}
+
+	if g.opts.Limiter != nil {
+		if !g.opts.Limiter.Allow(registeredProject, quota.KindRequestsPerMin) {
+			http.Error(w, "quota exceeded", http.StatusTooManyRequests)
+			return
+		}
 	}
 
 	mi, release, err := g.acquire(name)
@@ -518,6 +614,18 @@ func (g *Gateway) acquire(name string) (*managedInstance, func(), error) {
 		if len(p.instances)+p.spawning < p.maxSize {
 			p.spawning++
 			p.mu.Unlock()
+			if len(def.Layers) > 0 {
+				rctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				if err := g.opts.LayerResolver.Resolve(rctx, def.Layers); err != nil {
+					cancel()
+					p.mu.Lock()
+					p.spawning--
+					p.cond.Broadcast()
+					p.mu.Unlock()
+					return nil, nil, fmt.Errorf("resolve layers: %w", err)
+				}
+				cancel()
+			}
 			inst, err := g.opts.Spawn(def)
 			p.mu.Lock()
 			p.spawning--

@@ -156,13 +156,18 @@ func TestPGWatchDeletes(t *testing.T) {
 
 	_ = s.DeleteFunction(ctx, "x")
 
-	select {
-	case ev := <-ch:
-		if ev.Kind != EventFunctionDelete || ev.Name != "x" {
-			t.Fatalf("got %+v", ev)
+	// The put NOTIFY may still be in flight when we subscribed; drain
+	// non-matching events until we see the delete or time out.
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Kind == EventFunctionDelete && ev.Name == "x" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("delete NOTIFY not delivered")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("delete NOTIFY not delivered")
 	}
 }
 

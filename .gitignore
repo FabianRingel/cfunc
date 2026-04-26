@@ -22,5 +22,5 @@ admin-token
 
 # Local lima/state
 .lima/
-gateway
-builder
+/gateway
+/builder

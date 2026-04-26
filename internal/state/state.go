@@ -47,10 +47,16 @@ type FunctionDef struct {
 }
 
 // LayerMount mirrors gateway.LayerMount; same field names, same meaning.
+//
+// Digest is the content-addressed identifier (sha256:…) used for
+// layer-distribution: the gateway pulls from layerstore by Digest if
+// HostPath isn't populated locally. Empty Digest means "host-local
+// only" — the legacy 0.1/0.2 behaviour.
 type LayerMount struct {
 	Name      string `json:"name"`
 	HostPath  string `json:"host_path"`
 	MountPath string `json:"mount_path"`
+	Digest    string `json:"digest,omitempty"`
 }
 
 // CronJob is the persistent shape of a scheduled invocation.
