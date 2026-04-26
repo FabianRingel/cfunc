@@ -12,6 +12,11 @@ import (
 // genuinely need higher numbers can patch this and rebuild.
 const MaxConcurrencyCeiling = 256
 
+// MaxAdminBody caps the size of a single admin request. The largest
+// realistic register payload is a few KiB; 256 KiB leaves comfortable
+// headroom while preventing 1 GB JSON-bombs from authenticated callers.
+const MaxAdminBody = 256 * 1024
+
 // serveFunctions handles the collection endpoint:
 //   POST /_/api/functions   register or replace
 func (h *Handler) serveFunctions(w http.ResponseWriter, r *http.Request) {
@@ -24,8 +29,11 @@ func (h *Handler) serveFunctions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, MaxAdminBody)
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// MaxBytesReader exhaustion surfaces as decode error; both map
+		// to BadRequest from the caller's perspective.
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}

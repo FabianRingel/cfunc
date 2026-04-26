@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fabianringel/cfunc/internal/auth"
 	"github.com/fabianringel/cfunc/internal/dashboard"
@@ -106,6 +107,11 @@ func main() {
 	go runServer("public", *addr, pubMux)
 	go runServer("admin", *adminAddr, adminHandler)
 
+	if *tokenLit != "" {
+		slog.Warn("admin token passed via -admin-token flag",
+			"hint", "the value is visible in process listings; prefer -admin-token-file or CFUNC_ADMIN_TOKEN")
+	}
+
 	authStatus := "open (loopback)"
 	if token != "" {
 		authStatus = "token-protected"
@@ -122,7 +128,17 @@ func main() {
 
 func runServer(name, addr string, h http.Handler) {
 	slog.Info("listening", "name", name, "addr", addr)
-	if err := http.ListenAndServe(addr, h); err != nil && err != http.ErrServerClosed {
+	// Bound every phase of an HTTP transaction so a slow client (slowloris,
+	// stuck function, half-open connection) cannot pin a goroutine forever.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("listen", "name", name, "err", err)
 		os.Exit(1)
 	}
@@ -165,8 +181,7 @@ func (a adminAdapter) RegisterFunction(req dashboard.RegisterRequest) error {
 			Name: l.Name, HostPath: l.HostPath, MountPath: l.MountPath,
 		})
 	}
-	a.g.RegisterDef(def)
-	return nil
+	return a.g.RegisterDef(def)
 }
 
 func (a adminAdapter) UnregisterFunction(name string) bool {

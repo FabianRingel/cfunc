@@ -266,7 +266,8 @@ func (s *Store) readManifest(digest string) (*Manifest, error) {
 
 // hashTree computes a stable sha256 over the file tree rooted at dir,
 // covering relative path, mode, size, and content. Returns hex digest +
-// total content bytes.
+// total content bytes. Rejects symlinks for the same reason copyTree
+// does — keeping the policy in one place and failing early.
 func hashTree(dir string) (string, int64, error) {
 	h := sha256.New()
 	var total int64
@@ -275,6 +276,9 @@ func hashTree(dir string) (string, int64, error) {
 			return err
 		}
 		rel, _ := filepath.Rel(dir, p)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("layers: symlink in source not allowed: %s", rel)
+		}
 		fmt.Fprintf(h, "%s\x00%o\x00%d\x00", rel, info.Mode().Perm(), info.Size())
 		if info.Mode().IsRegular() {
 			f, err := os.Open(p)
@@ -297,6 +301,7 @@ func hashTree(dir string) (string, int64, error) {
 }
 
 func copyTree(src, dst string) error {
+	// Use Lstat-aware Walk so symlinks aren't followed silently.
 	return filepath.Walk(src, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -306,14 +311,16 @@ func copyTree(src, dst string) error {
 		if info.IsDir() {
 			return os.MkdirAll(target, info.Mode().Perm())
 		}
+		// Reject symlinks: their target is resolved relative to the
+		// container's rootfs at read time, which is a different
+		// filesystem from the host where the source lives. A layer
+		// containing a symlink to /etc/passwd would silently leak the
+		// container's /etc/passwd to anyone reading the layer file.
 		if info.Mode()&os.ModeSymlink != 0 {
-			link, err := os.Readlink(p)
-			if err != nil {
-				return err
-			}
-			return os.Symlink(link, target)
+			return fmt.Errorf("layers: symlink in source not allowed: %s", rel)
 		}
 		if !info.Mode().IsRegular() {
+			// Skip devices, sockets, fifos — never useful in a layer.
 			return nil
 		}
 		in, err := os.Open(p)

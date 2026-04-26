@@ -17,12 +17,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
 )
+
+// validJobID and validFunctionName mirror the gateway's allow-list:
+// reject anything that could corrupt logs, paths, or persistence files.
+var validJobID = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.\-]{0,63}$`)
+var validFunctionName = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.\-]{0,63}$`)
 
 // Job is one scheduled invocation.
 type Job struct {
@@ -37,14 +43,14 @@ type Job struct {
 // Validate checks structural correctness; schedule parsing is deferred
 // to the caller (uses cron.Parser to surface a precise error).
 func (j *Job) Validate() error {
-	if j.ID == "" {
-		return fmt.Errorf("scheduler: job ID required")
+	if !validJobID.MatchString(j.ID) {
+		return fmt.Errorf("scheduler: invalid job ID (allowed: [A-Za-z0-9_.-], 1-64)")
 	}
 	if j.Schedule == "" {
 		return fmt.Errorf("scheduler: schedule required")
 	}
-	if j.Function == "" {
-		return fmt.Errorf("scheduler: function required")
+	if !validFunctionName.MatchString(j.Function) {
+		return fmt.Errorf("scheduler: invalid function name")
 	}
 	return nil
 }

@@ -10,9 +10,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +23,21 @@ import (
 	"github.com/fabianringel/cfunc/internal/spawn"
 	"github.com/fabianringel/cfunc/internal/wire"
 )
+
+// validFunctionName accepts ASCII identifiers up to 64 chars: letters,
+// digits, underscore, dot, dash. Rejects newlines, control chars, ANSI
+// escapes, slashes, anything that would corrupt logs or path-routing.
+var validFunctionName = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.\-]{0,63}$`)
+
+// IsValidFunctionName reports whether name is acceptable as a function
+// identifier. Exposed so admin/scheduler can validate uniformly.
+func IsValidFunctionName(name string) bool {
+	return validFunctionName.MatchString(name)
+}
+
+// ErrInvalidName is returned by RegisterDef when the name fails the
+// allow-list check. Callers must reject the registration.
+var ErrInvalidName = errors.New("gateway: invalid function name (allowed: [A-Za-z0-9_.-], 1-64)")
 
 // DefaultDialTimeout is how long we wait for a freshly spawned user
 // process to dial the socket before giving up.
@@ -36,6 +53,12 @@ var DefaultReapInterval = 5 * time.Second
 // DefaultMaxConcurrency is the default per-function instance pool size.
 // Plenty for typical FaaS load; users can pin per FunctionDef.
 const DefaultMaxConcurrency = 4
+
+// MaxRequestBody caps the size of a single incoming function call to
+// keep the public port memory-safe under hostile load. The value is
+// half the wire-frame ceiling (16 MiB) to leave headroom for headers
+// and JSON envelope overhead.
+const MaxRequestBody = 8 * 1024 * 1024
 
 // FunctionDef is what callers register with the gateway.
 type FunctionDef struct {
@@ -168,16 +191,21 @@ func NewWithOptions(opts Options) *Gateway {
 	return g
 }
 
-// Register stores a FunctionDef for routing. Convenience overload.
+// Register stores a FunctionDef for routing. Panics on invalid name —
+// intended only for static (CLI-flag) registration where the operator
+// can fix the input.
 func (g *Gateway) Register(name, binary string) {
-	g.RegisterDef(FunctionDef{Name: name, Binary: binary})
+	if err := g.RegisterDef(FunctionDef{Name: name, Binary: binary}); err != nil {
+		panic(err)
+	}
 }
 
 // RegisterDef registers a function. If one with the same name exists,
-// it's replaced and any pooled warm instances are shut down.
-func (g *Gateway) RegisterDef(def FunctionDef) {
-	if def.Name == "" {
-		panic("gateway: FunctionDef.Name required")
+// it's replaced and any pooled warm instances are shut down. Returns
+// ErrInvalidName if the name violates the allow-list.
+func (g *Gateway) RegisterDef(def FunctionDef) error {
+	if !IsValidFunctionName(def.Name) {
+		return ErrInvalidName
 	}
 	if def.MaxConcurrency <= 0 {
 		def.MaxConcurrency = DefaultMaxConcurrency
@@ -190,6 +218,7 @@ func (g *Gateway) RegisterDef(def FunctionDef) {
 	if oldPool != nil {
 		oldPool.closeAll()
 	}
+	return nil
 }
 
 // Unregister removes a function and its pooled instances.
@@ -222,7 +251,9 @@ func (g *Gateway) Close() {
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/fn/")
-	if name == "" || strings.Contains(name, "/") {
+	// Strict allow-list: rejects path-traversal, newlines, ANSI escapes,
+	// and anything else that could corrupt logs or break routing.
+	if !IsValidFunctionName(name) {
 		http.NotFound(w, r)
 		return
 	}
@@ -236,7 +267,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	reqID := newID()
 	tStart := g.opts.Now()
-	body, _ := io.ReadAll(r.Body)
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBody)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
 	headers := map[string]string{}
 	for k, v := range r.Header {
 		if len(v) > 0 {

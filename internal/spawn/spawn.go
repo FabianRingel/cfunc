@@ -58,10 +58,12 @@ func Start(binary string, env []string, dialTimeout time.Duration) (*Instance, e
 	}
 
 	cmd := exec.Command(binary)
-	// Inherit host env (PATH etc. — needed for shebang interpreters such as
-	// /usr/bin/env python3), then layer caller-supplied entries on top, then
-	// our injected CFUNC_SOCKET. In container mode the spec strips this.
-	cmd.Env = append(append(os.Environ(), env...), "CFUNC_SOCKET="+sockPath)
+	// Curated env inheritance. We intentionally drop everything the user
+	// didn't ask for: a compromised function shouldn't see secrets like
+	// CFUNC_ADMIN_TOKEN, AWS_*, KUBERNETES_*, etc. just because they're
+	// in the gateway's environment. PATH stays so shebang interpreters
+	// resolve. Caller-supplied entries layer on top, then CFUNC_SOCKET.
+	cmd.Env = append(append(inheritedEnv(), env...), "CFUNC_SOCKET="+sockPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -129,6 +131,23 @@ func (i *Instance) Close() error {
 	}
 	_ = i.listen.Close()
 	return os.RemoveAll(i.sockDir)
+}
+
+// inheritedEnvKeys are the only host env vars passed to user functions
+// by default. Anything else (secrets, cloud-credential helpers, gateway
+// internals) is dropped. The caller can re-add specifics via env=[].
+var inheritedEnvKeys = []string{
+	"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR",
+}
+
+func inheritedEnv() []string {
+	out := make([]string, 0, len(inheritedEnvKeys))
+	for _, k := range inheritedEnvKeys {
+		if v := os.Getenv(k); v != "" {
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
 }
 
 // makeSocket creates a tempdir + listening Unix socket inside it.

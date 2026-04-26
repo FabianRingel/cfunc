@@ -7,8 +7,10 @@ one cold start per function, then every invoke reuses it.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
+import socket
 import threading
 from contextlib import contextmanager
 from typing import Iterable
@@ -56,13 +58,57 @@ def db():
         conn.close()
 
 
+class UnsafeURLError(ValueError):
+    """Raised when a URL resolves to a non-public address (loopback,
+    link-local, RFC1918, etc.) — guards against SSRF into internal
+    services and cloud metadata endpoints."""
+
+
+def _check_public_host(host: str) -> None:
+    """Resolve `host` and refuse if any A/AAAA record is private,
+    loopback, link-local, multicast, or otherwise non-routable.
+
+    NB: this is a TOCTOU window — between resolution here and the
+    socket connect inside httpx, DNS could in theory return a different
+    address. For determined attackers (DNS rebinding) the proper fix is
+    a custom transport that pins the resolved IP. For ordinary misuse
+    this check is enough.
+    """
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise UnsafeURLError(f"cannot resolve {host}: {e}") from e
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            raise UnsafeURLError(
+                f"refusing to fetch non-public address {ip} for host {host}"
+            )
+
+
 def fetch(url: str, timeout: float = 15.0) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise UnsafeURLError(f"unsupported scheme: {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise UnsafeURLError(f"missing hostname in {url!r}")
+    _check_public_host(parsed.hostname)
     with httpx.Client(
         timeout=timeout,
         headers={"User-Agent": "cfunc-scraper/0.1 (+https://github.com/fabianringel/cfunc)"},
         follow_redirects=True,
     ) as cl:
         r = cl.get(url)
+        # Re-validate after redirects: the server may have redirected to
+        # a private address. r.url is the final resolved URL.
+        final = urlparse(str(r.url))
+        if final.hostname and final.hostname != parsed.hostname:
+            _check_public_host(final.hostname)
         r.raise_for_status()
         return r.text
 

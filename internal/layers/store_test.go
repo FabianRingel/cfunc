@@ -130,6 +130,29 @@ func TestRejectsRelativeMount(t *testing.T) {
 	}
 }
 
+func TestRejectsSymlinksInSource(t *testing.T) {
+	dir := t.TempDir()
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "real.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink that, if preserved, would resolve to /etc/shadow inside
+	// any container that mounts the layer at /opt/x.
+	if err := os.Symlink("/etc/shadow", filepath.Join(src, "evil")); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Add("L", "1", "/m", "any", src); err == nil {
+		t.Fatal("expected error for symlink in source")
+	} else if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+}
+
 func TestPersistsAcrossReopen(t *testing.T) {
 	root := t.TempDir()
 	s1, _ := Open(root)
