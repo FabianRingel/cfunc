@@ -14,11 +14,11 @@ import (
 )
 
 // S3Config bundles the connection parameters for any S3-compatible
-// endpoint (Hetzner Object Storage, MinIO, AWS S3, …).
+// endpoint (Hetzner Object Storage, RustFS, AWS S3, …).
 type S3Config struct {
 	Endpoint  string // e.g. "fsn1.your-objectstorage.com" (no scheme)
 	Bucket    string
-	Region    string // optional; AWS requires it, MinIO/Hetzner ignore
+	Region    string // optional; AWS requires it, RustFS/Hetzner ignore
 	AccessKey string
 	SecretKey string
 	UseSSL    bool   // true for HTTPS (always for production)

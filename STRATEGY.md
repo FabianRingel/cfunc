@@ -123,11 +123,11 @@ Isolation auf Container-Ebene.**
 | Release | Inhalt | Aufwand |
 |---|---|---|
 | **0.1** | Single-Node, 1 Tenant, voll funktional. Wire/Pool/Layers/Scheduler/Dashboard/TLS/Builder steht | ✅ |
-| **0.2 — Cluster-Ready** | `internal/state` mit Postgres-Backend + LISTEN/NOTIFY, Cron-Leader-Election via `pg_try_advisory_lock`, `cfunc cluster init/status`, Gateway `-state-dsn`. `internal/layerstore` mit S3-Backend (Hetzner Object Storage / MinIO / AWS) als isolierte, getestete Schicht. **Layer-Distribution-Verdrahtung folgt mit 0.3**, weil sie eine Erweiterung des Layer-Adressmodells (Digest in `LayerMount`) erfordert, die mit dem Multi-Tenancy-Refactor zusammen passt. | ✅ Code-Side |
+| **0.2 — Cluster-Ready** | `internal/state` mit Postgres-Backend + LISTEN/NOTIFY, Cron-Leader-Election via `pg_try_advisory_lock`, `cfunc cluster init/status`, Gateway `-state-dsn`. `internal/layerstore` mit S3-Backend (Hetzner Object Storage / RustFS / AWS) als isolierte, getestete Schicht. **Layer-Distribution-Verdrahtung folgt mit 0.3**, weil sie eine Erweiterung des Layer-Adressmodells (Digest in `LayerMount`) erfordert, die mit dem Multi-Tenancy-Refactor zusammen passt. | ✅ Code-Side |
 | **0.2.1** | Helm-Chart + docker-compose, Hetzner-Quickstart-Doku, layerstore-Verdrahtung wenn 0.3 sich verzögert | offen |
 | **0.3 — Multi-Tenancy** | Projekte, API-Keys, Quotas, Audit-Log, Per-Projekt-Routing | ~2 Wochen |
 | **0.4 — Sticky-Routing & Performance** | Eigener Router oder HAProxy-Recipe, Cold-Start-Optimierungen, Pre-Warming-API (`min_warm: N`) | ~2 Wochen |
-| **0.5 — Lambda-Parity-Trigger** | API-Gateway-Routes (Path/Method/Headers), Queue-Trigger via NATS oder Postgres, S3-Event-Trigger (MinIO-kompatibel) | ~3 Wochen |
+| **0.5 — Lambda-Parity-Trigger** | API-Gateway-Routes (Path/Method/Headers), Queue-Trigger via NATS oder Postgres, S3-Event-Trigger (RustFS/MinIO-kompatibel) | ~3 Wochen |
 | **0.6 — Operator-Suite** | Terraform-Modul für Hetzner, Ansible-Playbook, Prometheus-Exporter, Grafana-Dashboards, Backup-Tooling | ~2 Wochen |
 | **0.7 — Sicherheits-Hardening** | Layer-Signaturen-Pflicht (cosign), Policy-Engine (OPA-light), Network-Policies, User-Namespace-Isolation pro Function | ~2 Wochen |
 | **1.0 — Production-Ready** | Doku, Benchmarks, Lambda-Migration-Guide, Code-of-Conduct, CONTRIBUTING.md, Issue-Templates, Release-Pipeline | ~2 Wochen |
@@ -194,8 +194,8 @@ Sektion.
 - **Tendenz:** Postgres-Queue für 0.5 (kein neuer Stack-Member), NATS als optionaler Backend für hochfrequente Workloads
 
 ### 7.6 Event-Trigger: S3-kompatibel?
-- MinIO emittiert S3-style Events; gut etabliert
-- **Tendenz:** Wir konsumieren MinIO-Events via NATS oder Webhook; bauen kein eigenes Object-Storage
+- RustFS (Apache-2.0, Rust, MinIO-Nachfolger) und Hetzner Object Storage emittieren S3-style Events
+- **Tendenz:** Wir konsumieren S3-Events via NATS oder Webhook; bauen kein eigenes Object-Storage. Lokale Tests laufen gegen RustFS (MinIO ist seit den Lizenzänderungen 2025 effektiv tot)
 
 ### 7.7 OSS-Lizenz — **entschieden: Apache 2.0**
 **Apache License, Version 2.0** (siehe [`LICENSE`](./LICENSE), [`NOTICE`](./NOTICE)).

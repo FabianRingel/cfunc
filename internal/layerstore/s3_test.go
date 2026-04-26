@@ -24,11 +24,18 @@ func uniqueDigest(t *testing.T) string {
 	return "sha256:" + hex.EncodeToString(b[:])
 }
 
-// s3TestStore returns a configured S3Store or skips. Set:
-//   TEST_S3_ENDPOINT=127.0.0.1:9000
+// s3TestStore returns a configured S3Store or skips. Spin up a local
+// RustFS (MinIO replacement, Apache 2.0) for these tests:
+//   docker run -d --name cfunc-rustfs -p 19000:9000 \
+//     -e RUSTFS_ACCESS_KEY=rustfsadmin -e RUSTFS_SECRET_KEY=rustfsadmin \
+//     rustfs/rustfs:latest
+//   aws --endpoint-url http://127.0.0.1:19000 s3 mb s3://cfunc-test
+//
+// Then set:
+//   TEST_S3_ENDPOINT=127.0.0.1:19000
 //   TEST_S3_BUCKET=cfunc-test
-//   TEST_S3_ACCESS=minioadmin
-//   TEST_S3_SECRET=minioadmin
+//   TEST_S3_ACCESS=rustfsadmin
+//   TEST_S3_SECRET=rustfsadmin
 //   TEST_S3_SSL=false
 func s3TestStore(t *testing.T) *S3Store {
 	t.Helper()

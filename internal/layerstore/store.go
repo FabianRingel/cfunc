@@ -8,7 +8,7 @@
 //
 // Two implementations exist: NoopStore (single-node default — pushes
 // and gets are no-ops) and S3Store (any S3-compatible endpoint:
-// Hetzner Object Storage, MinIO, AWS S3).
+// Hetzner Object Storage, RustFS, AWS S3).
 package layerstore
 
 import (
