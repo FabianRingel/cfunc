@@ -1,0 +1,52 @@
+# Lima VM definition for cfunc development.
+# Provides a Linux arm64 VM with runc + Go installed and the repo mounted
+# read-write at /Users/fabian/cfunc (same path as on the host, so absolute
+# paths from the host work unchanged inside the VM).
+#
+# Bring up:    limactl start --name=cfunc ./scripts/cfunc-dev.yaml
+# Shell in:    limactl shell cfunc
+# Run tests:   limactl shell cfunc -- bash -lc 'cd /Users/fabian/cfunc && go test ./...'
+
+vmType: "vz"
+arch: "aarch64"
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+cpus: 4
+memory: "4GiB"
+disk: "20GiB"
+
+mounts:
+  - location: "~"
+    writable: true
+  - location: "/tmp/cfunc-runc"
+    writable: true
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y runc ca-certificates curl jq
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      if ! command -v go >/dev/null; then
+        curl -fsSL https://go.dev/dl/go1.26.2.linux-arm64.tar.gz -o /tmp/go.tgz
+        rm -rf /usr/local/go
+        tar -C /usr/local -xzf /tmp/go.tgz
+        ln -sf /usr/local/go/bin/go /usr/local/bin/go
+        ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+      fi
+
+probes:
+  - description: "runc is available"
+    script: |
+      #!/bin/bash
+      command -v runc
+    hint: "runc was not installed by provisioning"

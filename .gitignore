@@ -1,0 +1,24 @@
+# OS
+.DS_Store
+
+# Build artefacts (intentionally tracked exceptions are noted)
+internal/dashboard/web/node_modules/
+templates/node/example/node_modules/
+# internal/dashboard/web/dist/ is INTENTIONALLY tracked so `go build`
+# works after a fresh clone without `npm install`.
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+
+# Local secrets / tokens
+*.token
+admin-token
+
+# Local lima/state
+.lima/

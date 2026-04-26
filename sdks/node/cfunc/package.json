@@ -1,0 +1,13 @@
+{
+  "name": "cfunc",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "description": "Node SDK for cfunc — write a handler, call start()."
+}
