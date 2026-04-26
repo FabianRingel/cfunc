@@ -137,6 +137,7 @@ func main() {
 
 	pubMux := http.NewServeMux()
 	pubMux.Handle("/fn/", gw)
+	pubMux.Handle("/v1/", gw) // multi-tenant routing: /v1/<project>/fn/<name>
 	pubMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		w.Write([]byte("ok"))
@@ -386,10 +387,11 @@ func (a adminAdapter) RegisterFunction(req dashboard.RegisterRequest) error {
 		Binary:         req.Binary,
 		Env:            req.Env,
 		MaxConcurrency: req.MaxConcurrency,
+		Project:        req.Project,
 	}
 	for _, l := range req.Layers {
 		def.Layers = append(def.Layers, gateway.LayerMount{
-			Name: l.Name, HostPath: l.HostPath, MountPath: l.MountPath,
+			Name: l.Name, HostPath: l.HostPath, MountPath: l.MountPath, Digest: l.Digest,
 		})
 	}
 	return a.g.RegisterDef(def)

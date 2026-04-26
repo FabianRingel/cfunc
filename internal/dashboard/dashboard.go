@@ -40,12 +40,16 @@ type RegisterRequest struct {
 	Env            []string           `json:"env,omitempty"`
 	Layers         []RegisterLayerRef `json:"layers,omitempty"`
 	MaxConcurrency int                `json:"max_concurrency,omitempty"`
+	// Project is the tenant scope. Empty == "default" (the gateway
+	// fills this in if absent). Forwarded to gateway.RegisterDef.
+	Project string `json:"project,omitempty"`
 }
 
 type RegisterLayerRef struct {
 	Name      string `json:"name"`
 	HostPath  string `json:"host_path"`
 	MountPath string `json:"mount_path"`
+	Digest    string `json:"digest,omitempty"`
 }
 
 // Handler is an http.Handler mounted under a fixed path prefix

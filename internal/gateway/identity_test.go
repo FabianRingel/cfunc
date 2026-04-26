@@ -96,6 +96,37 @@ func TestServeHTTPRejectsCrossProjectIdentity(t *testing.T) {
 	}
 }
 
+// TestServeHTTPRoutesV1Path proves that the gateway's ServeHTTP
+// accepts the multi-tenant URL form. Catches the regression where
+// the public mux only routed /fn/ and silently 404'd /v1/*.
+func TestServeHTTPRoutesV1Path(t *testing.T) {
+	store := state.NewInMemStore()
+	_ = store.CreateProject(context.Background(), state.Project{Name: "acme"})
+
+	var spawnCalls int64
+	gw := gateway.NewWithOptions(gateway.Options{
+		Store: store,
+		Spawn: spySpawner(&spawnCalls),
+	})
+	defer gw.Close()
+	if err := gw.RegisterDef(gateway.FunctionDef{
+		Name: "fn", Binary: "/usr/bin/true", Project: "acme",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(gw)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/acme/fn/fn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if atomic.LoadInt64(&spawnCalls) == 0 {
+		t.Errorf("/v1/<project>/fn/<name> did not reach spawner — routing dropped the request")
+	}
+}
+
 // TestServeHTTPNoIdentitySkipsCrossProjectCheck ensures the legacy
 // single-tenant deployment (no auth middleware) keeps working: a
 // request with no identity in the context proceeds past the project

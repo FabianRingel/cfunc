@@ -76,6 +76,33 @@ func TestAdminRegister(t *testing.T) {
 	}
 }
 
+// TestAdminRegisterForwardsProject catches the bug where
+// RegisterRequest didn't carry the project field, so the JSON
+// {"project": "..."} was silently dropped and every function
+// landed in the default project.
+func TestAdminRegisterForwardsProject(t *testing.T) {
+	admin := &stubAdmin{}
+	srv := newWithAdmin(admin)
+	defer srv.Close()
+
+	body := `{"name":"fn","binary":"/usr/local/bin/fn","project":"acme"}`
+	resp, err := http.Post(srv.URL+"/_/api/functions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if len(admin.registered) != 1 {
+		t.Fatalf("admin saw %d registrations", len(admin.registered))
+	}
+	if admin.registered[0].Project != "acme" {
+		t.Fatalf("project not forwarded: got %q, want %q",
+			admin.registered[0].Project, "acme")
+	}
+}
+
 func TestAdminRegisterRejectsMissingFields(t *testing.T) {
 	admin := &stubAdmin{}
 	srv := newWithAdmin(admin)
