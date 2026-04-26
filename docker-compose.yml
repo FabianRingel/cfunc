@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Local cluster-mode stack: 2 gateways + builder + Postgres + RustFS.
+# Two gateways prove cluster behaviour (LISTEN/NOTIFY propagation,
+# leader election) without you having to spin up Hetzner servers.
+#
+#   docker compose up --build
+#   curl http://localhost:8080/_/api/functions  # admin API on gateway-a
+#   curl http://localhost:8082/_/api/functions  # admin API on gateway-b
+#   curl http://localhost:18080/fn/<name>       # public, gateway-a
+#   curl http://localhost:18081/fn/<name>       # public, gateway-b
+#
+# RustFS dashboard (S3-compatible object storage) on http://localhost:19000.
+# Postgres on localhost:5433 if you want to inspect it.
+#
+# Pass `-state-dsn` is wired automatically; the migrate service runs
+# `cfunc cluster init` once before the gateways come up.
+
+x-cfunc-image: &cfunc-image
+  build: .
+  image: cfunc:local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cfunc
+      POSTGRES_PASSWORD: cfunc
+      POSTGRES_DB: cfunc
+    ports: ["5433:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cfunc -d cfunc"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+    ports: ["19000:9000"]
+    volumes:
+      - rustfsdata:/data
+
+  migrate:
+    <<: *cfunc-image
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/sbin/tini", "--"]
+    command: ["cfunc", "cluster", "init", "--dsn", "postgres://cfunc:cfunc@postgres:5432/cfunc?sslmode=disable"]
+    restart: "no"
+
+  builder:
+    <<: *cfunc-image
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command:
+      - cfunc-builder
+      - -addr=0.0.0.0:9090
+      - -token=dev-builder-token
+      - -allow-python=3.11,3.12
+    ports: ["9090:9090"]
+
+  gateway-a:
+    <<: *cfunc-image
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      builder:
+        condition: service_started
+    environment:
+      CFUNC_REPLICA: a
+    command:
+      - cfunc-gateway
+      - -addr=:8080
+      - -admin-addr=0.0.0.0:8081
+      - -state-dsn=postgres://cfunc:cfunc@postgres:5432/cfunc?sslmode=disable
+      - -builder-url=http://builder:9090
+      - -builder-token=dev-builder-token
+    ports:
+      - "18080:8080"  # public
+      - "8080:8081"   # admin/dashboard
+
+  gateway-b:
+    <<: *cfunc-image
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      builder:
+        condition: service_started
+    environment:
+      CFUNC_REPLICA: b
+    command:
+      - cfunc-gateway
+      - -addr=:8080
+      - -admin-addr=0.0.0.0:8081
+      - -state-dsn=postgres://cfunc:cfunc@postgres:5432/cfunc?sslmode=disable
+      - -builder-url=http://builder:9090
+      - -builder-token=dev-builder-token
+    ports:
+      - "18081:8080"  # public
+      - "8082:8081"   # admin/dashboard
+
+volumes:
+  pgdata:
+  rustfsdata:

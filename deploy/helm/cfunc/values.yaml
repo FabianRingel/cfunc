@@ -1,0 +1,79 @@
+image:
+  repository: ghcr.io/fabianringel/cfunc
+  tag: ""        # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Postgres DSN. Required for cluster mode (multi-replica).
+# If left empty, gateway runs single-node with in-memory state and
+# replicaCount must be 1.
+state:
+  dsn: ""        # postgres://user:pw@host:5432/db?sslmode=require
+  dsnSecret:     # optional: read DSN from existing secret
+    name: ""
+    key: dsn
+
+# Run `cfunc cluster init` once before gateways start. Disable if
+# you've already migrated out-of-band.
+migrate:
+  enabled: true
+
+gateway:
+  replicaCount: 2
+  service:
+    public:
+      type: ClusterIP
+      port: 8080
+    admin:
+      type: ClusterIP
+      port: 8081
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 2,    memory: 1Gi }
+  # Bearer token guarding the admin port. Generate with `openssl rand -hex 32`.
+  adminToken: ""
+  adminTokenSecret:
+    name: ""
+    key: token
+  ingress:
+    enabled: false
+    className: ""
+    host: fn.example.org
+    tls: { enabled: false, secretName: "" }
+    annotations: {}
+
+builder:
+  enabled: true
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 9090
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 2,    memory: 2Gi }
+  # Shared secret between gateway and builder.
+  token: ""
+  tokenSecret:
+    name: ""
+    key: token
+  allowPython: "3.11,3.12"
+
+# Layer-distribution backend (S3-compatible). Used by 0.3+ once
+# layerstore is wired into builder push / gateway pull.
+layerstore:
+  enabled: false
+  endpoint: ""    # e.g. fsn1.your-objectstorage.com
+  bucket: ""
+  accessKey: ""
+  secretKey: ""
+  useSSL: true
+  prefix: layers/
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

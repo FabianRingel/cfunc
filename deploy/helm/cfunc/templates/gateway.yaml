@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cfunc.fullname" . }}-gateway
+  labels: {{- include "cfunc.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "cfunc.name" . }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        {{- include "cfunc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+    spec:
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "cfunc.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              exec cfunc-gateway \
+                -addr=:8080 \
+                -admin-addr=0.0.0.0:8081 \
+                {{- if or .Values.state.dsn .Values.state.dsnSecret.name }}
+                -state-dsn="$CFUNC_STATE_DSN" \
+                {{- end }}
+                {{- if .Values.builder.enabled }}
+                -builder-url=http://{{ include "cfunc.fullname" . }}-builder:{{ .Values.builder.service.port }} \
+                -builder-token="$CFUNC_BUILDER_TOKEN" \
+                {{- end }}
+                {{- if or .Values.gateway.adminToken .Values.gateway.adminTokenSecret.name }}
+                -admin-token="$CFUNC_ADMIN_TOKEN"
+                {{- end }}
+          env:
+            {{- if or .Values.state.dsn .Values.state.dsnSecret.name }}
+            {{- include "cfunc.dsnEnv" . | nindent 12 }}
+            {{- end }}
+            {{- if or .Values.gateway.adminToken .Values.gateway.adminTokenSecret.name }}
+            - name: CFUNC_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gateway.adminTokenSecret.name | default (printf "%s-admin" (include "cfunc.fullname" .)) }}
+                  key: {{ .Values.gateway.adminTokenSecret.key | default "token" }}
+            {{- end }}
+            {{- if and .Values.builder.enabled (or .Values.builder.token .Values.builder.tokenSecret.name) }}
+            - name: CFUNC_BUILDER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.builder.tokenSecret.name | default (printf "%s-builder" (include "cfunc.fullname" .)) }}
+                  key: {{ .Values.builder.tokenSecret.key | default "token" }}
+            {{- end }}
+          ports:
+            - { name: public, containerPort: 8080 }
+            - { name: admin,  containerPort: 8081 }
+          readinessProbe:
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources: {{- toYaml .Values.gateway.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cfunc.fullname" . }}-gateway
+  labels: {{- include "cfunc.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.gateway.service.public.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "cfunc.name" . }}
+    app.kubernetes.io/component: gateway
+  ports:
+    - { name: public, port: {{ .Values.gateway.service.public.port }}, targetPort: public }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cfunc.fullname" . }}-gateway-admin
+  labels: {{- include "cfunc.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.gateway.service.admin.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "cfunc.name" . }}
+    app.kubernetes.io/component: gateway
+  ports:
+    - { name: admin, port: {{ .Values.gateway.service.admin.port }}, targetPort: admin }
+{{- if .Values.gateway.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "cfunc.fullname" . }}-gateway
+  labels: {{- include "cfunc.labels" . | nindent 4 }}
+  annotations: {{- toYaml .Values.gateway.ingress.annotations | nindent 4 }}
+spec:
+  {{- with .Values.gateway.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.gateway.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "cfunc.fullname" . }}-gateway
+                port: { number: {{ .Values.gateway.service.public.port }} }
+  {{- if .Values.gateway.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.gateway.ingress.host | quote }}]
+      secretName: {{ .Values.gateway.ingress.tls.secretName | default (printf "%s-gateway-tls" (include "cfunc.fullname" .)) }}
+  {{- end }}
+{{- end }}

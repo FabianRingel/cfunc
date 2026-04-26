@@ -250,6 +250,11 @@ Kubernetes operations team.
 
 - [`docs/en/operations.md`](./docs/en/operations.md) — operator guide
   (deploy, configure, secure, monitor)
+- [`docs/en/hetzner.md`](./docs/en/hetzner.md) — Hetzner Cloud quickstart
+  (3 gateways + Postgres + Object Storage, ~€30/month)
+- [`docker-compose.yml`](./docker-compose.yml) — local cluster stack
+  (2 gateways + Postgres + RustFS + builder)
+- [`deploy/helm/cfunc`](./deploy/helm/cfunc) — Helm chart for Kubernetes
 - [`docs/en/developer.md`](./docs/en/developer.md) — function-author
   guide (SDKs, deployment, layers)
 - [`docs/en/agent.md`](./docs/en/agent.md) — single-page reference for

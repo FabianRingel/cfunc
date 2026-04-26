@@ -1,0 +1,11 @@
+.git
+.github
+internal/dashboard/web/node_modules
+internal/dashboard/web/dist
+**/*.test
+**/testdata
+*.md
+!STRATEGY.md
+docs
+scripts/lima*
+deploy/helm/*/charts

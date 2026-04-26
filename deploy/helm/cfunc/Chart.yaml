@@ -1,0 +1,17 @@
+apiVersion: v2
+name: cfunc
+description: Self-hosted Function-as-a-Service for the European cloud
+type: application
+version: 0.2.1
+appVersion: "0.2.1"
+home: https://github.com/fabianringel/cfunc
+sources:
+  - https://github.com/fabianringel/cfunc
+maintainers:
+  - name: Fabian Ringel
+keywords:
+  - faas
+  - serverless
+  - functions
+  - lambda
+  - eu-sovereign

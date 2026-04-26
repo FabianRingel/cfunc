@@ -1,0 +1,60 @@
+{{- if .Values.builder.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cfunc.fullname" . }}-builder
+  labels: {{- include "cfunc.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.builder.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "cfunc.name" . }}
+      app.kubernetes.io/component: builder
+  template:
+    metadata:
+      labels:
+        {{- include "cfunc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: builder
+    spec:
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: builder
+          image: {{ include "cfunc.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              exec cfunc-builder \
+                -addr=0.0.0.0:9090 \
+                -allow-python={{ .Values.builder.allowPython | quote }} \
+                {{- if or .Values.builder.token .Values.builder.tokenSecret.name }}
+                -token="$CFUNC_BUILDER_TOKEN"
+                {{- end }}
+          env:
+            {{- if or .Values.builder.token .Values.builder.tokenSecret.name }}
+            - name: CFUNC_BUILDER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.builder.tokenSecret.name | default (printf "%s-builder" (include "cfunc.fullname" .)) }}
+                  key: {{ .Values.builder.tokenSecret.key | default "token" }}
+            {{- end }}
+          ports:
+            - { name: http, containerPort: 9090 }
+          resources: {{- toYaml .Values.builder.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cfunc.fullname" . }}-builder
+  labels: {{- include "cfunc.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.builder.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "cfunc.name" . }}
+    app.kubernetes.io/component: builder
+  ports:
+    - { name: http, port: {{ .Values.builder.service.port }}, targetPort: http }
+{{- end }}
