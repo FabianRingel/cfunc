@@ -195,7 +195,7 @@ Sektion.
 
 ### 7.6 Event-Trigger: S3-kompatibel?
 - RustFS (Apache-2.0, Rust, MinIO-Nachfolger) und Hetzner Object Storage emittieren S3-style Events
-- **Tendenz:** Wir konsumieren S3-Events via NATS oder Webhook; bauen kein eigenes Object-Storage. Lokale Tests laufen gegen RustFS (MinIO ist seit den Lizenzänderungen 2025 effektiv tot)
+- **Tendenz:** Wir konsumieren S3-Events via NATS oder Webhook; bauen kein eigenes Object-Storage. Lokale Tests laufen gegen RustFS (MinIO-Repo wurde archiviert, Projekt eingestellt)
 
 ### 7.7 OSS-Lizenz — **entschieden: Apache 2.0**
 **Apache License, Version 2.0** (siehe [`LICENSE`](./LICENSE), [`NOTICE`](./NOTICE)).
