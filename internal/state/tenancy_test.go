@@ -115,6 +115,21 @@ func TestAPIKeyCRUD(t *testing.T) {
 	}
 }
 
+func TestCreateAPIKeyRejectsWildcardProject(t *testing.T) {
+	// Project "*" is the in-memory sentinel for cluster-admin identity
+	// (see internal/auth/apikey.go). A stored key with Project="*" would
+	// inherit cluster-admin invoke permissions on every project — refuse
+	// at creation time as defence in depth.
+	s := NewInMemStore()
+	tok := sha256.Sum256([]byte("k"))
+	err := s.CreateAPIKey(context.Background(), APIKey{
+		ID: "ck_evil", Project: "*", TokenSHA256: tok[:],
+	})
+	if err == nil {
+		t.Fatal("expected wildcard project rejection")
+	}
+}
+
 func TestQuotaSetGetList(t *testing.T) {
 	s := NewInMemStore()
 	ctx := context.Background()

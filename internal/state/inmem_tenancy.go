@@ -71,6 +71,9 @@ func (s *InMemStore) DeleteProject(_ context.Context, name string) error {
 }
 
 func (s *InMemStore) CreateAPIKey(_ context.Context, k APIKey) error {
+	if k.Project == "*" {
+		return errors.New(`state: api key project "*" is reserved for cluster-admin identity`)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureTenancyMaps()

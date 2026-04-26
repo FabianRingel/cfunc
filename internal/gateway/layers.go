@@ -226,37 +226,38 @@ func writeEntry(dst string, hdr *tar.Header, r io.Reader) error {
 		_, err = io.Copy(f, r)
 		return err
 	case tar.TypeSymlink:
-		// Reject symlinks whose target escapes dst, so a follow-up
-		// regular-file entry can't be written through the link to an
-		// arbitrary path on the host. Both absolute targets and ones
-		// that walk up out of the layer root are forbidden.
-		if filepath.IsAbs(hdr.Linkname) {
-			return fmt.Errorf("symlink %q has absolute target %q", hdr.Name, hdr.Linkname)
-		}
-		linkAbs := filepath.Clean(filepath.Join(filepath.Dir(target), hdr.Linkname))
-		dstAbs := filepath.Clean(dst)
-		if !strings.HasPrefix(linkAbs, dstAbs+string(filepath.Separator)) && linkAbs != dstAbs {
-			return fmt.Errorf("symlink %q escapes layer root", hdr.Name)
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		return os.Symlink(hdr.Linkname, target)
+		// Symlinks are categorically refused. cfunc's own layer
+		// producers don't emit them, and accepting them opens a
+		// directory-symlink-chain class of escapes that purely-lexical
+		// validation can't fully close (defence-in-depth would require
+		// openat2(RESOLVE_BENEATH) or per-component Lstat). If a future
+		// layer source genuinely needs symlinks, revisit with a hardened
+		// extractor instead of relaxing this rule.
+		return fmt.Errorf("symlinks not allowed in layers (entry %q)", hdr.Name)
 	default:
 		// Skip device files, hardlinks, etc. — layers are filesystem trees.
 		return nil
 	}
 }
 
-// safeJoin returns a path inside dst constructed from name, rejecting
-// any component that would escape via "..", absolute paths, or other
-// path-traversal tricks. The result is filepath.Clean-ed.
+// safeJoin returns a path inside dst constructed from name. It rejects
+// any name that contains a ".." component, is absolute, or otherwise
+// resolves outside dst. Crucially we reject explicitly rather than
+// silently clamping ("../foo" → "foo"), so a malicious or buggy
+// archiver gets an error instead of having its intent reinterpreted.
 func safeJoin(dst, name string) (string, error) {
-	clean := filepath.Clean("/" + name) // root the path so .. can't escape
-	if clean == "/" {
+	if name == "" {
 		return "", fmt.Errorf("empty name")
 	}
-	target := filepath.Join(dst, clean)
+	if filepath.IsAbs(name) || strings.HasPrefix(name, "/") {
+		return "", fmt.Errorf("absolute path")
+	}
+	for _, part := range strings.Split(filepath.ToSlash(name), "/") {
+		if part == ".." {
+			return "", fmt.Errorf("path contains ..")
+		}
+	}
+	target := filepath.Join(dst, filepath.Clean(name))
 	dstAbs := filepath.Clean(dst)
 	if !strings.HasPrefix(target, dstAbs+string(filepath.Separator)) && target != dstAbs {
 		return "", fmt.Errorf("path escapes root")

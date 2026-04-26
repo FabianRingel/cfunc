@@ -228,11 +228,9 @@ func TestStoreResolverRejectsDotDotPath(t *testing.T) {
 	r := NewStoreResolver(store, cache)
 	err := r.Resolve(context.Background(),
 		[]LayerMount{{Name: "L", MountPath: "/opt/L", Digest: digest}})
-	// safeJoin clamps the path inside dst, but the resulting absolute
-	// path equals dst itself for "../escape.txt" with depth 1 — depending
-	// on implementation, either error OR a write inside dst. Confirm
-	// nothing escaped:
-	_ = err
+	if err == nil {
+		t.Fatal("dot-dot path should have been rejected with an error")
+	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(cache), "escape.txt")); err == nil {
 		t.Fatal("dot-dot path escaped extraction root")
 	}

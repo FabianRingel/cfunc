@@ -61,6 +61,9 @@ func (s *PostgresStore) DeleteProject(ctx context.Context, name string) error {
 // --- API Keys --------------------------------------------------------
 
 func (s *PostgresStore) CreateAPIKey(ctx context.Context, k APIKey) error {
+	if k.Project == "*" {
+		return errors.New(`state/pg: api key project "*" is reserved for cluster-admin identity`)
+	}
 	scopesJSON, _ := json.Marshal(orEmpty(k.Scopes))
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO cfunc_api_keys (id, project, description, token_sha256, scopes)
