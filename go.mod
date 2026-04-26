@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/caddyserver/certmagic v0.25.3
 	github.com/coder/websocket v1.8.14
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/libdns/cloudflare v0.2.2
 	github.com/libdns/digitalocean v0.0.0-20250606071607-dfa7af5c2e31
 	github.com/libdns/hetzner v1.0.0
@@ -35,10 +36,14 @@ require (
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.7 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/libdns/libdns v1.1.1 // indirect
 	github.com/mholt/acmez/v3 v3.1.6 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect

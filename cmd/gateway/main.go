@@ -47,6 +47,7 @@ import (
 	"github.com/fabianringel/cfunc/internal/auth"
 	"github.com/fabianringel/cfunc/internal/dashboard"
 	"github.com/fabianringel/cfunc/internal/gateway"
+	"github.com/fabianringel/cfunc/internal/state"
 	cftls "github.com/fabianringel/cfunc/internal/tls"
 
 	// Side-effect imports register libdns providers in the global
@@ -80,6 +81,10 @@ func main() {
 	adminTLSDomain := flag.String("admin-tls-domain", "",
 		"comma-separated domains for ACME on the admin port; empty = HTTP")
 
+	stateDSN := flag.String("state-dsn", "",
+		"Postgres DSN for cluster-coordinated state (functions, crons). "+
+			"Empty = single-node in-memory store.")
+
 	builderURL := flag.String("builder-url", "",
 		"base URL of cfunc-builder (e.g. http://10.0.0.5:9090). "+
 			"When set, /_/api/layers/build is forwarded to the builder.")
@@ -107,7 +112,20 @@ func main() {
 		os.Exit(2)
 	}
 
-	gw := gateway.NewWithOptions(gateway.Options{Logger: logger})
+	var stateStore state.Store
+	if *stateDSN != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ps, err := state.OpenPostgres(ctx, *stateDSN)
+		cancel()
+		if err != nil {
+			slog.Error("state: open postgres", "err", err)
+			os.Exit(1)
+		}
+		stateStore = ps
+		slog.Info("state: postgres mode", "dsn_host", redactDSN(*stateDSN))
+	}
+
+	gw := gateway.NewWithOptions(gateway.Options{Logger: logger, Store: stateStore})
 	if *binary != "" {
 		n := *name
 		if n == "" {
@@ -340,6 +358,20 @@ func (c *builderClient) BuildLayer(spec []byte) ([]byte, error) {
 		return nil, fmt.Errorf("builder returned %d: %s", resp.StatusCode, body)
 	}
 	return body, nil
+}
+
+// redactDSN strips credentials from a Postgres URL for logging.
+func redactDSN(dsn string) string {
+	// Quick best-effort: trim everything before "@" if present.
+	at := strings.LastIndex(dsn, "@")
+	if at < 0 {
+		return dsn
+	}
+	scheme := strings.Index(dsn, "://")
+	if scheme < 0 {
+		return dsn
+	}
+	return dsn[:scheme+3] + "***" + dsn[at:]
 }
 
 type statsAdapter struct{ g *gateway.Gateway }

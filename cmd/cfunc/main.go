@@ -22,6 +22,7 @@ import (
 	builderpkg "github.com/fabianringel/cfunc/internal/builder"
 	"github.com/fabianringel/cfunc/internal/layers"
 	"github.com/fabianringel/cfunc/internal/scheduler"
+	"github.com/fabianringel/cfunc/internal/state"
 )
 
 const usage = `cfunc - cloud function runner
@@ -36,6 +37,9 @@ Usage:
   cfunc cron list
   cfunc cron rm   ID
   cfunc cron run  ID --gateway http://127.0.0.1:8080
+
+  cfunc cluster init   --dsn postgres://user:pw@host/db   (run schema migrations)
+  cfunc cluster status --dsn postgres://user:pw@host/db   (list functions + cron jobs)
 
 Environment:
   CFUNC_STORE   cfunc state root (default: /var/lib/cfunc)
@@ -52,12 +56,88 @@ func main() {
 		layerCmd(os.Args[2:])
 	case "cron":
 		cronCmd(os.Args[2:])
+	case "cluster":
+		clusterCmd(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", os.Args[1], usage)
 		os.Exit(2)
 	}
+}
+
+func clusterCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Print(usage)
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "init":
+		clusterInit(args[1:])
+	case "status":
+		clusterStatus(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown cluster subcommand: %s\n", args[0])
+		os.Exit(2)
+	}
+}
+
+func clusterInit(args []string) {
+	fs := flag.NewFlagSet("cluster init", flag.ExitOnError)
+	dsn := fs.String("dsn", "", "Postgres DSN (required)")
+	fs.Parse(args)
+	if *dsn == "" {
+		fs.Usage()
+		os.Exit(2)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s, err := state.OpenPostgres(ctx, *dsn)
+	if err != nil {
+		exit(err)
+	}
+	defer s.Close()
+	fmt.Println("ok — schema applied")
+}
+
+func clusterStatus(args []string) {
+	fs := flag.NewFlagSet("cluster status", flag.ExitOnError)
+	dsn := fs.String("dsn", "", "Postgres DSN (required)")
+	fs.Parse(args)
+	if *dsn == "" {
+		fs.Usage()
+		os.Exit(2)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s, err := state.OpenPostgres(ctx, *dsn)
+	if err != nil {
+		exit(err)
+	}
+	defer s.Close()
+
+	fns, _ := s.ListFunctions(ctx)
+	crons, _ := s.ListCronJobs(ctx)
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "FUNCTIONS\tBINARY\tMAX_CONCURRENCY\tUPDATED")
+	for _, f := range fns {
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\n", f.Name, f.Binary, f.MaxConcurrency,
+			f.UpdatedAt.Format(time.RFC3339))
+	}
+	if len(fns) == 0 {
+		fmt.Fprintln(tw, "(none)")
+	}
+	fmt.Fprintln(tw)
+	fmt.Fprintln(tw, "CRON_JOBS\tSCHEDULE\tFUNCTION\tUPDATED")
+	for _, c := range crons {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", c.ID, c.Schedule, c.Function,
+			c.UpdatedAt.Format(time.RFC3339))
+	}
+	if len(crons) == 0 {
+		fmt.Fprintln(tw, "(none)")
+	}
+	tw.Flush()
 }
 
 func storeRoot() string {
