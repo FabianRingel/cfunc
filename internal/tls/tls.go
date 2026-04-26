@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package tls integrates ACME-issued TLS certs into cfunc via certmagic.
 //
 // Two modes:

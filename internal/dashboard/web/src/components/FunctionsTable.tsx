@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { useState } from 'react'
 import type { FunctionStats } from '../types'
 import { fmtIdle, fmtMs } from '../format'

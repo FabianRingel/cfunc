@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package auth implements lightweight token authentication for the
 // cfunc admin/dashboard surface.
 //

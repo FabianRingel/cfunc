@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Example cfunc handler in Python.
 
 The SDK module (cfunc.py) is expected on PYTHONPATH. The gateway/runtime

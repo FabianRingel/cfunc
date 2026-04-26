@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Python handler that imports a module from a mounted layer.
 
 The layer is expected at /opt/layers/pylib (configurable via env LAYER_PATH).

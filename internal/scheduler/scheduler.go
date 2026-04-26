@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package scheduler runs cron-driven cfunc functions. Jobs are persisted
 // as JSON; at runtime they are registered with robfig/cron/v3 and each
 // firing performs an HTTP call to the gateway, traversing exactly the

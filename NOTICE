@@ -1,0 +1,24 @@
+cfunc
+Copyright 2026 Fabian Ringel and cfunc contributors
+
+This product is licensed under the Apache License, Version 2.0
+(see LICENSE).
+
+This product includes third-party software:
+
+  - Go standard library, golang.org/x/* — BSD-3-Clause
+  - github.com/caddyserver/certmagic — Apache-2.0
+  - github.com/coder/websocket — ISC
+  - github.com/libdns/{cloudflare,digitalocean,hetzner,rfc2136,route53}
+                                          — MIT (each individually)
+  - github.com/opencontainers/runtime-spec — Apache-2.0
+  - github.com/robfig/cron — MIT
+  - gopkg.in/yaml.v3 — MIT + Apache-2.0
+  - React, Vite, Tailwind CSS, Recharts (frontend) — MIT
+  - certmagic transitively pulls additional Apache-2.0 / MIT components;
+    see go.sum and internal/dashboard/web/package-lock.json for the
+    exact pinned versions.
+
+The Apache License does not grant permission to use the trademarks,
+service marks, or trade names of cfunc contributors, except as required
+to describe the origin of the work.

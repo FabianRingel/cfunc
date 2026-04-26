@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command cfunc is the cfunc CLI. Subcommands cover layer management,
 // function deployment, and (later) cron management.
 package main

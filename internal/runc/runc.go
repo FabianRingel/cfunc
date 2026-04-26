@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package runc wraps the runc binary as a thin OCI-runtime client. It is
 // intentionally minimal: create a bundle dir with config.json, call
 // `runc run`, signal/kill, and clean up. Anything more sophisticated

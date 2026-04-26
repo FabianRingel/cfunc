@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Test handler used by TestPoolConcurrencyCap.
 // Sleeps for X-Sleep-Ms (default 200) before responding.
 package main

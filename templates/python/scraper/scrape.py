@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """cfunc scrape handler — single page per invocation, recurses via the
 gateway by calling /fn/scrape for each discovered link.
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Token storage + helpers for authenticated dashboard access.
 // Uses sessionStorage (cleared when tab closes) so a stolen token can't
 // linger across browser restarts.

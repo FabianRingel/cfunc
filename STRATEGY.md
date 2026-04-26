@@ -196,11 +196,15 @@ Sektion.
 - MinIO emittiert S3-style Events; gut etabliert
 - **Tendenz:** Wir konsumieren MinIO-Events via NATS oder Webhook; bauen kein eigenes Object-Storage
 
-### 7.7 OSS-Lizenz
-- **Apache 2.0:** business-friendly, gängig im k8s/cloud-native-Ökosystem, kein Copyleft
-- **MPL 2.0:** ähnlich, aber Copyleft auf Datei-Ebene, schützt vor Hidden-Vendoring-Forks
-- **GPL/AGPL:** würde Adoption durch Firmen behindern → contra Mission
-- **Tendenz:** Apache 2.0
+### 7.7 OSS-Lizenz — **entschieden: Apache 2.0**
+**Apache License, Version 2.0** (siehe [`LICENSE`](./LICENSE), [`NOTICE`](./NOTICE)).
+SPDX-Header (`Apache-2.0`) sind in allen Source-Files. Begründung: maximal
+permissiv für Distributoren, die auf cfunc aufsetzen und kommerzielle
+Compute-Ressourcen weiterverkaufen wollen — passt zur Mission „self-hosted
+FaaS für die EU-Cloud, jeder darf seine eigene Distribution bauen".
+Patent-Grant ist explizit (Abschnitt 3 der Lizenz), Trademark-Schutz
+bleibt (Abschnitt 6) — der Name „cfunc" ist nicht automatisch frei, der
+Code schon.
 
 ### 7.8 Repo-Strategie
 - **Monorepo** (`github.com/fabianringel/cfunc`): einfach, eine Versionsnummer, atomische Cross-Komponenten-Refactors
@@ -309,3 +313,4 @@ Was wir explizit garantieren wollen, dokumentiert in `docs/compliance/`:
 | Datum | Änderung |
 |---|---|
 | 2026-04-26 | Initiale Version, geschrieben in Sequenz mit Single-Node 0.1-Abschluss |
+| 2026-04-26 | Entscheidung 7.7: **Apache 2.0** als OSS-Lizenz. LICENSE + NOTICE angelegt, SPDX-Header in allen Source-Files. |

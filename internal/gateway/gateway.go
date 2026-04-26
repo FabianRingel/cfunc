@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package gateway implements the HTTP frontend: it routes /fn/<name> to a
 // registered function, spawns it on demand, and translates HTTP <-> wire
 // frames. Each function has a pool of warm instances (up to

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package cfunc is the Go SDK for writing cfunc functions.
 //
 // A function binary calls Start(handler). The SDK connects to the Unix

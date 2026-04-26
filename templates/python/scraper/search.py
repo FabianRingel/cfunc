@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """cfunc vector-search handler.
 
 POST /fn/search  body: {"query": "...", "k": 5}

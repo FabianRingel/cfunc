@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // cfunc Node SDK — write an async handler, call start(handler).
 //
 // Mirrors the Go and Python SDKs: connects to CFUNC_SOCKET, reads

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package layers implements the cfunc dependency-layer store.
 //
 // A layer is a host directory tree that gets bind-mounted read-only into

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command scheduler is the cfunc cron daemon. It loads jobs from the
 // JSON store, registers them with cron, and triggers HTTP calls to the
 // gateway when each job fires. SIGHUP reloads the store.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command gateway is the cfunc HTTP frontend.
 //
 // It runs two listeners:

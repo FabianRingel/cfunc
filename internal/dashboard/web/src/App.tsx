@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { useEffect, useState } from 'react'
 import { Header } from './components/Header'
 import { FunctionsTable } from './components/FunctionsTable'

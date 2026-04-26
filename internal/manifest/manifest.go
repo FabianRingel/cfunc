@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package manifest defines the cfunc.yaml schema that ships next to a
 // function's source code. It tells the gateway how to run the function
 // and which dependency layers to mount.

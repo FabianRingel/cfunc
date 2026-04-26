@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared utilities for the cfunc scraper functions.
 
 Embedding model: BAAI/bge-small-en-v1.5 (384-dim, ONNX via fastembed).

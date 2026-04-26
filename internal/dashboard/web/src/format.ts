@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 export function fmtMs(n: number | undefined | null, digits = 0): string {
   if (n == null) return '—'
   return Number(n).toFixed(digits)

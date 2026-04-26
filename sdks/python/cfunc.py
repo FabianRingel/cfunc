@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """cfunc Python SDK — write a handler, call cfunc.start(handler).
 
 Mirrors the Go SDK contract:

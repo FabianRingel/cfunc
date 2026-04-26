@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Mirrors internal/gateway/stats.go and internal/dashboard/log_handler.go.
 
 export interface LayerMount {

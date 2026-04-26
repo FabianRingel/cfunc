@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package wire implements the cfunc IPC protocol: length-prefixed JSON frames
 // over any io.Reader/io.Writer (typically a Unix socket).
 //

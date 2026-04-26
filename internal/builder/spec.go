@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package builder is the server-side layer-build engine.
 //
 // Operators send a build *specification* (what to build, how to build

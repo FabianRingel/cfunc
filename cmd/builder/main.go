@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command builder is the cfunc layer-build daemon.
 //
 // It accepts BuildSpec requests over HTTP, runs the build in its

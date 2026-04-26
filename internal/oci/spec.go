@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package oci builds OCI runtime specs (config.json) for cfunc function
 // containers. The output is consumed by runc (or any OCI runtime) and is
 // designed for the cfunc isolation model:

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package dashboard implements the cfunc operator dashboard: an HTTP UI
 // embedded in the gateway binary, plus a slog handler that captures log
 // records for live streaming.

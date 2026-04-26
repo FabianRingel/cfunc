@@ -32,3 +32,10 @@ go test ./...
 Der E2E-Test in `internal/gateway/gateway_e2e_test.go` baut die
 Beispiel-Function und übt den vollen Pfad HTTP → Gateway → Spawn →
 Unix-Socket → SDK → Handler → zurück.
+
+## Lizenz
+
+Lizenziert unter [Apache License 2.0](./LICENSE). Siehe [`NOTICE`](./NOTICE)
+für Drittsoftware-Hinweise. Du darfst cfunc verwenden, modifizieren,
+kommerziell vertreiben — auch als eigene Distribution oder
+Managed-Service-Angebot. Patent-Grant inklusive (Abschnitt 3 der Lizenz).

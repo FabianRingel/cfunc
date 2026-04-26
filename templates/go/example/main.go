@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Example cfunc handler in Go. Build:
 //
 //	go build -o /tmp/example ./templates/go/example

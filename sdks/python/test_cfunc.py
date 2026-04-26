@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the Python SDK. Run with: python3 -m unittest test_cfunc"""
 import json
 import socket

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package spawn manages a single user-function instance and the Unix
 // socket it talks to. Two modes are supported:
 //

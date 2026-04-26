@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // inspect is a test/diagnostic handler that returns inode + content of a
 // path it stats inside the container. Used by the layer-sharing test to
 // prove that two containers see the same host file via a shared bind-mount.

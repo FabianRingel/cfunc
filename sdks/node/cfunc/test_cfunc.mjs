@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Run with: node --test sdks/node/cfunc/test_cfunc.mjs
 
 import { test } from 'node:test'
