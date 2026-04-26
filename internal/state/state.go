@@ -107,6 +107,38 @@ type Store interface {
 	PutCronJob(ctx context.Context, j CronJob) error
 	DeleteCronJob(ctx context.Context, id string) error
 
+	// --- Tenancy (0.3) ---
+
+	CreateProject(ctx context.Context, p Project) error
+	GetProject(ctx context.Context, name string) (Project, error)
+	ListProjects(ctx context.Context) ([]Project, error)
+	DeleteProject(ctx context.Context, name string) error
+
+	CreateAPIKey(ctx context.Context, k APIKey) error
+	// LookupAPIKey resolves a presented sha256 hash to the full key
+	// (including project + scopes) and stamps LastUsedAt. Returns
+	// ErrNotFound if the hash doesn't match any stored key.
+	LookupAPIKey(ctx context.Context, tokenSHA256 []byte) (APIKey, error)
+	ListAPIKeys(ctx context.Context, project string) ([]APIKey, error)
+	DeleteAPIKey(ctx context.Context, id string) error
+
+	SetQuota(ctx context.Context, project, kind string, value int64) error
+	// GetQuota returns the configured limit. Unset kinds return 0
+	// (interpreted by the gateway as unlimited) without an error.
+	GetQuota(ctx context.Context, project, kind string) (int64, error)
+	ListQuotas(ctx context.Context, project string) ([]Quota, error)
+
+	// AddQuotaUsage increments the (project, kind, bucket) counter.
+	// Bucket is typically time.Now().Truncate(time.Minute).
+	AddQuotaUsage(ctx context.Context, project, kind string, bucket time.Time, delta int64) error
+	// GetQuotaUsage sums all buckets at or after `since`.
+	GetQuotaUsage(ctx context.Context, project, kind string, since time.Time) (int64, error)
+
+	AppendAudit(ctx context.Context, e AuditEntry) error
+	// ListAudit returns entries for `project` (or cluster-level if empty)
+	// since the given time, newest first, capped at limit.
+	ListAudit(ctx context.Context, project string, since time.Time, limit int) ([]AuditEntry, error)
+
 	// Watch returns a channel of Events. Subscribers see every mutation
 	// that happens through this Store (and, for Postgres, mutations
 	// that arrive via LISTEN from peers). The channel is closed when

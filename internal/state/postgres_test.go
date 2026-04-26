@@ -31,8 +31,15 @@ func freshPGStore(t *testing.T) *PostgresStore {
 	}
 	t.Cleanup(func() { s.Close() })
 	if _, err := s.pool.Exec(context.Background(),
-		"TRUNCATE cfunc_functions, cfunc_cron_jobs"); err != nil {
+		`TRUNCATE cfunc_functions, cfunc_cron_jobs,
+		         cfunc_api_keys, cfunc_quotas, cfunc_quota_usage, cfunc_audit_log`); err != nil {
 		t.Fatalf("truncate: %v", err)
+	}
+	// Truncate non-default projects so multi-project tests start clean
+	// without breaking the FK-protected default seed row.
+	if _, err := s.pool.Exec(context.Background(),
+		`DELETE FROM cfunc_projects WHERE name != 'default'`); err != nil {
+		t.Fatalf("clean projects: %v", err)
 	}
 	return s
 }

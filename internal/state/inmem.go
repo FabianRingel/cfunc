@@ -20,6 +20,15 @@ type InMemStore struct {
 	functions map[string]FunctionDef
 	crons     map[string]CronJob
 
+	// Tenancy state (0.3). Lazy-init via ensureTenancyMaps so existing
+	// callers that never touch projects pay nothing.
+	projects    map[string]Project
+	apiKeys     map[string]APIKey
+	quotas      map[string]map[string]Quota
+	usage       map[string]map[string]map[time.Time]int64
+	audit       []AuditEntry
+	nextAuditID int64
+
 	subsMu sync.Mutex
 	subs   map[chan Event]struct{}
 }
