@@ -174,8 +174,13 @@ func main() {
 		})
 		adminMux.Handle(dh.Prefix(), dh)
 	}
-	var adminHandler http.Handler = adminMux
-	adminHandler = auth.TokenAuth(token, adminHandler)
+	// Auth-gating: the dashboard's static bundle (HTML/JS/CSS) must
+	// remain reachable without a token, otherwise the operator can
+	// never see the login screen to enter the token in. Only the API
+	// paths (`/_/api/*`) and the WebSocket (`/_/ws`) require auth.
+	// Anything outside the dashboard prefix (which today is nothing,
+	// but defensively) falls back to full token-gating.
+	adminHandler := dashboardAuthSplit(*dashPrefix, token, adminMux)
 
 	ctx := context.Background()
 
@@ -304,6 +309,29 @@ func runChallengeServer(addr string, pubTLS, adminTLS *cftls.Manager, primary st
 		slog.Error("HTTP-01 listener", "err", err)
 		os.Exit(1)
 	}
+}
+
+// dashboardAuthSplit returns an http.Handler that requires the bearer
+// token only for the dashboard's API and WebSocket routes — the
+// static bundle is served unauthenticated so the operator can reach
+// the React login screen and enter the token there. Anything outside
+// the dashboard prefix falls back to full token-gating, so accidental
+// new routes don't sneak past the auth check.
+func dashboardAuthSplit(prefix, token string, next http.Handler) http.Handler {
+	authed := auth.TokenAuth(token, next)
+	if token == "" {
+		return next // no auth configured anywhere
+	}
+	apiPrefix := prefix + "api/"
+	wsPath := prefix + "ws"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if strings.HasPrefix(p, apiPrefix) || p == wsPath || !strings.HasPrefix(p, prefix) {
+			authed.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func authStatus(token string) string {
