@@ -2,6 +2,11 @@
 
 > Selbstgebauter FaaS-Runner mit Container-Isolation, sprach-agnostischem
 > Handler-Contract und gemeinsam genutzten Dependency-Layers.
+>
+> **Vision, Architekturpfeiler, Roadmap nach Release, offene
+> Designentscheidungen** → siehe [`STRATEGY.md`](./STRATEGY.md). Diese
+> Datei trackt die operativen Phasen (1–6 sind die Single-Node-Reise
+> bis 0.1).
 
 ## Vision
 
