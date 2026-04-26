@@ -236,6 +236,73 @@ Die Spawn-Wahl (Subprocess vs. runc) ist im `cmd/gateway`-Setup
 hartcodiert. Für Production-Linux: `gateway.Options.Spawn` auf
 `StartRunc`-Closure setzen.
 
+## TLS / ACME
+
+cfunc kann selbst Let's-Encrypt-Zertifikate aushandeln und erneuern (via
+`certmagic` + libdns). Kein externer Reverse-Proxy nötig.
+
+**Public-Port mit HTTP-01 (einzelne Domain, kein Wildcard):**
+
+```sh
+cfunc-gateway \
+  -addr=:443 \
+  -tls-domain=fn.example.org \
+  -tls-email=ops@example.org
+# Port 80 muss erreichbar sein für die ACME-Challenge.
+```
+
+**Public-Port mit DNS-01 (Wildcards möglich, kein Port 80 nötig):**
+
+```sh
+HETZNER_DNS_API_TOKEN=… cfunc-gateway \
+  -addr=:443 \
+  -tls-domain="fn.example.org,*.fn.example.org" \
+  -tls-email=ops@example.org \
+  -tls-dns-provider=hetzner
+```
+
+**Mitgelieferte Provider:**
+
+| Provider | Env-Vars |
+|---|---|
+| `cloudflare` | `CF_API_TOKEN` (Zone:Read + DNS:Edit) |
+| `hetzner` | `HETZNER_DNS_API_TOKEN` (DNS-Console-Token, NICHT Cloud-API) |
+| `route53` | AWS-Standard-Chain (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) |
+| `digitalocean` | `DO_AUTH_TOKEN` |
+| `rfc2136` | `RFC2136_SERVER`, `RFC2136_KEY_NAME`, `RFC2136_KEY_ALG`, `RFC2136_KEY` |
+
+**Admin-Port mit eigenem Cert:**
+
+```sh
+cfunc-gateway \
+  -admin-addr=:8443 \
+  -admin-tls-domain=admin.example.org \
+  -tls-email=ops@example.org \
+  -tls-dns-provider=hetzner \
+  -admin-token-file=/etc/cfunc/admin.token
+```
+
+**Weitere Flags:**
+
+| Flag | Zweck |
+|---|---|
+| `-tls-storage <pfad>` | Cert-Cache-Verzeichnis (default: certmagic-Standard) |
+| `-tls-staging` | Let's Encrypt Staging (zum Testen, vermeidet Rate-Limits) |
+| `-tls-http-addr` | Port für HTTP-01 + HTTP→HTTPS-Redirect (default `:80`) |
+
+**Erstes Setup testen:**
+
+```sh
+# Mit Staging-CA, vermeidet LE-Rate-Limits:
+cfunc-gateway -tls-domain fn.test ... -tls-staging
+# Wenn das durchgeht, das Flag entfernen für echte Certs.
+```
+
+Renewal läuft automatisch im Hintergrund; kein Restart nötig. Cert-Files
+werden im `tls-storage`-Pfad gehalten und über `flock` gegen
+gleichzeitigen Zugriff geschützt — mehrere Gateway-Instances können sich
+denselben Storage teilen.
+
 ## Health-Check
 
 ```sh

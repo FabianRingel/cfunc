@@ -14,6 +14,14 @@
 //   $CFUNC_ADMIN_TOKEN
 //   -admin-token <literal>      (least preferred — appears in process list)
 //
+// TLS:
+//   -tls-domain "fn.example.org,*.fn.example.org"  ACME-managed certs
+//   -tls-email ops@example.org
+//   -tls-dns-provider hetzner                       DNS-01 (any libdns provider
+//                                                    registered in internal/tls)
+//   -tls-staging                                    use Let's Encrypt staging
+//   -admin-tls-domain admin.example.org             separate cert for admin
+//
 // Functions can be registered at startup via -fn/-binary, and at any
 // time later via:
 //
@@ -22,6 +30,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"net"
@@ -33,6 +42,11 @@ import (
 	"github.com/fabianringel/cfunc/internal/auth"
 	"github.com/fabianringel/cfunc/internal/dashboard"
 	"github.com/fabianringel/cfunc/internal/gateway"
+	cftls "github.com/fabianringel/cfunc/internal/tls"
+
+	// Side-effect imports register libdns providers in the global
+	// registry; pick the ones you want compiled in.
+	_ "github.com/fabianringel/cfunc/internal/tls/providers"
 )
 
 func main() {
@@ -46,6 +60,21 @@ func main() {
 			"will accept (default: same-origin only; use \"*\" to allow any)")
 	name := flag.String("fn", "", "(optional) initial function name")
 	binary := flag.String("binary", "", "(optional) initial function binary")
+
+	tlsDomain := flag.String("tls-domain", "",
+		"comma-separated domains for ACME on the public port; empty disables TLS")
+	tlsEmail := flag.String("tls-email", "", "ACME contact email (required if -tls-domain set)")
+	tlsStorage := flag.String("tls-storage", "",
+		"directory to cache certs (default: certmagic standard path)")
+	tlsDNS := flag.String("tls-dns-provider", "",
+		"libdns provider for DNS-01 challenge; empty = HTTP-01")
+	tlsStaging := flag.Bool("tls-staging", false, "use Let's Encrypt staging")
+	tlsHTTPAddr := flag.String("tls-http-addr", ":80",
+		"port-80 listener for HTTP-01 challenges + HTTP→HTTPS redirect")
+
+	adminTLSDomain := flag.String("admin-tls-domain", "",
+		"comma-separated domains for ACME on the admin port; empty = HTTP")
+
 	flag.Parse()
 
 	textHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
@@ -75,7 +104,6 @@ func main() {
 		slog.Info("registered initial function", "name", n, "binary", *binary)
 	}
 
-	// Public mux: function endpoints only.
 	pubMux := http.NewServeMux()
 	pubMux.Handle("/fn/", gw)
 	pubMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +111,6 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	// Admin mux: dashboard + admin API, gated by token.
 	adminMux := http.NewServeMux()
 	if *dashPrefix != "" {
 		var origins []string
@@ -104,32 +131,74 @@ func main() {
 	var adminHandler http.Handler = adminMux
 	adminHandler = auth.TokenAuth(token, adminHandler)
 
-	go runServer("public", *addr, pubMux)
-	go runServer("admin", *adminAddr, adminHandler)
+	ctx := context.Background()
+
+	// Acquire certs (synchronous; blocks until LE responds). Done before
+	// listeners come up so a misconfig fails fast at startup.
+	pubTLS, err := setupTLS(ctx, *tlsDomain, *tlsEmail, *tlsStorage, *tlsDNS, *tlsStaging, "public", logger)
+	if err != nil {
+		slog.Error("public TLS setup failed", "err", err)
+		os.Exit(1)
+	}
+	adminTLS, err := setupTLS(ctx, *adminTLSDomain, *tlsEmail, *tlsStorage, *tlsDNS, *tlsStaging, "admin", logger)
+	if err != nil {
+		slog.Error("admin TLS setup failed", "err", err)
+		os.Exit(1)
+	}
+
+	go runServer("public", *addr, pubMux, pubTLS)
+	go runServer("admin", *adminAddr, adminHandler, adminTLS)
+
+	// HTTP-01 needs a port-80 listener for ACME challenges. We mount it
+	// once (covering both public and admin if both opted in) and add a
+	// best-effort HTTPS redirect for the public host.
+	if (pubTLS != nil && pubTLS.NeedsHTTPChallenge()) ||
+		(adminTLS != nil && adminTLS.NeedsHTTPChallenge()) {
+		go runChallengeServer(*tlsHTTPAddr, pubTLS, adminTLS, *tlsDomain)
+	}
 
 	if *tokenLit != "" {
 		slog.Warn("admin token passed via -admin-token flag",
 			"hint", "the value is visible in process listings; prefer -admin-token-file or CFUNC_ADMIN_TOKEN")
 	}
 
-	authStatus := "open (loopback)"
-	if token != "" {
-		authStatus = "token-protected"
-	}
 	slog.Info("gateway up",
 		"public", *addr,
 		"admin", *adminAddr,
-		"auth", authStatus,
-		"dashboard", endpointForLog(*dashPrefix))
+		"auth", authStatus(token),
+		"dashboard", endpointForLog(*dashPrefix),
+		"tls_public", *tlsDomain != "",
+		"tls_admin", *adminTLSDomain != "")
 
-	// Block forever (servers exit the process on fatal listen errors).
 	select {}
 }
 
-func runServer(name, addr string, h http.Handler) {
-	slog.Info("listening", "name", name, "addr", addr)
-	// Bound every phase of an HTTP transaction so a slow client (slowloris,
-	// stuck function, half-open connection) cannot pin a goroutine forever.
+// setupTLS returns nil if domain is empty (TLS disabled for that port).
+func setupTLS(ctx context.Context, domains, email, storage, provider string, staging bool,
+	tag string, logger *slog.Logger) (*cftls.Manager, error) {
+	if domains == "" {
+		return nil, nil
+	}
+	if email == "" {
+		return nil, &configError{tag: tag, msg: "-tls-email required when -tls-domain or -admin-tls-domain is set"}
+	}
+	var ds []string
+	for _, d := range strings.Split(domains, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			ds = append(ds, d)
+		}
+	}
+	return cftls.Setup(ctx, cftls.Config{
+		Domains:  ds,
+		Email:    email,
+		Storage:  storage,
+		Provider: provider,
+		Staging:  staging,
+		Logger:   logger.With("tls", tag),
+	})
+}
+
+func runServer(name, addr string, h http.Handler, tlsMgr *cftls.Manager) {
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           h,
@@ -138,16 +207,67 @@ func runServer(name, addr string, h http.Handler) {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	if tlsMgr != nil {
+		srv.TLSConfig = tlsMgr.TLSConfig()
+		slog.Info("listening (TLS)", "name", name, "addr", addr)
+		if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			slog.Error("listen", "name", name, "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+	slog.Info("listening", "name", name, "addr", addr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("listen", "name", name, "err", err)
 		os.Exit(1)
 	}
 }
 
-// isLoopback returns true if addr binds only to loopback. We accept the
-// "127.0.0.1:NNNN" and "localhost:NNNN" forms (and their IPv6 [::1] eq.).
-// Anything else — including bare ":NNNN" or "0.0.0.0:NNNN" — is treated
-// as exposed and requires a token.
+// runChallengeServer brings up a port-80 listener that:
+//   1. answers ACME HTTP-01 challenges via certmagic
+//   2. issues 301 redirects from http:// to https:// for the primary
+//      public domain
+func runChallengeServer(addr string, pubTLS, adminTLS *cftls.Manager, primary string) {
+	mux := http.NewServeMux()
+	primaryHost := strings.SplitN(strings.TrimSpace(strings.Split(primary, ",")[0]), ":", 2)[0]
+	redirect := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if primaryHost != "" {
+			host = primaryHost
+		}
+		http.Redirect(w, r, "https://"+host+r.RequestURI, http.StatusMovedPermanently)
+	})
+	mux.Handle("/", redirect)
+
+	// certmagic's challenge handler intercepts /.well-known/acme-challenge/.
+	var h http.Handler = mux
+	if pubTLS != nil {
+		h = pubTLS.HTTPChallengeHandler(h)
+	}
+	if adminTLS != nil {
+		h = adminTLS.HTTPChallengeHandler(h)
+	}
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	slog.Info("listening (HTTP-01 + redirect)", "addr", addr)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		slog.Error("HTTP-01 listener", "err", err)
+		os.Exit(1)
+	}
+}
+
+func authStatus(token string) string {
+	if token == "" {
+		return "open (loopback)"
+	}
+	return "token-protected"
+}
+
+// isLoopback returns true if addr binds only to loopback.
 func isLoopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -162,6 +282,10 @@ func isLoopback(addr string) bool {
 	}
 	return false
 }
+
+type configError struct{ tag, msg string }
+
+func (e *configError) Error() string { return e.tag + ": " + e.msg }
 
 type statsAdapter struct{ g *gateway.Gateway }
 

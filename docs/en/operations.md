@@ -235,6 +235,72 @@ The spawner choice (subprocess vs runc) is wired in the `cmd/gateway`
 setup. For Linux production, set `gateway.Options.Spawn` to a
 `StartRunc`-backed closure.
 
+## TLS / ACME
+
+cfunc can negotiate and renew Let's Encrypt certs itself (via
+`certmagic` + libdns) — no external reverse proxy required.
+
+**Public port with HTTP-01 (single host, no wildcards):**
+
+```sh
+cfunc-gateway \
+  -addr=:443 \
+  -tls-domain=fn.example.org \
+  -tls-email=ops@example.org
+# Port 80 must be reachable for the ACME challenge.
+```
+
+**Public port with DNS-01 (wildcards, no port-80 dependency):**
+
+```sh
+HETZNER_DNS_API_TOKEN=… cfunc-gateway \
+  -addr=:443 \
+  -tls-domain="fn.example.org,*.fn.example.org" \
+  -tls-email=ops@example.org \
+  -tls-dns-provider=hetzner
+```
+
+**Bundled providers:**
+
+| Provider | Env vars |
+|---|---|
+| `cloudflare` | `CF_API_TOKEN` (Zone:Read + DNS:Edit) |
+| `hetzner` | `HETZNER_DNS_API_TOKEN` (DNS-console token, NOT Cloud API) |
+| `route53` | AWS standard chain (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) |
+| `digitalocean` | `DO_AUTH_TOKEN` |
+| `rfc2136` | `RFC2136_SERVER`, `RFC2136_KEY_NAME`, `RFC2136_KEY_ALG`, `RFC2136_KEY` |
+
+**Admin port with its own cert:**
+
+```sh
+cfunc-gateway \
+  -admin-addr=:8443 \
+  -admin-tls-domain=admin.example.org \
+  -tls-email=ops@example.org \
+  -tls-dns-provider=hetzner \
+  -admin-token-file=/etc/cfunc/admin.token
+```
+
+**Additional flags:**
+
+| Flag | Purpose |
+|---|---|
+| `-tls-storage <path>` | cert cache directory (default: certmagic standard) |
+| `-tls-staging` | use Let's Encrypt staging (testing — avoids rate limits) |
+| `-tls-http-addr` | port for HTTP-01 challenges + HTTP→HTTPS redirect (default `:80`) |
+
+**First-time setup:**
+
+```sh
+# Stage first to avoid LE production rate limits:
+cfunc-gateway -tls-domain fn.test ... -tls-staging
+# Once it succeeds, remove the flag for real certs.
+```
+
+Renewal happens in the background; no restart needed. Cert files live
+in `tls-storage`, protected by file locks — multiple gateway instances
+can safely share the same storage.
+
 ## Health check
 
 ```sh
